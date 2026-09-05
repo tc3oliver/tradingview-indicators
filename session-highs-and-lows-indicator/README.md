@@ -3,7 +3,7 @@
 A TradingView Pine Script v5 indicator that marks the high and low of each SMC/ICT
 killzone with labels and dashed lines extended to the right.
 
-- **Version**: v3.1 — see [CHANGELOG.md](./CHANGELOG.md)
+- **Version**: v3.1 (2026-09-05) — see [CHANGELOG.md](./CHANGELOG.md)
 - **License**: [MPL-2.0](../LICENSE) © tc3oliver
 - **Reporting a problem**: include symbol, timeframe, chart timezone and a
   screenshot — [why](../README.md#reporting-an-issue)

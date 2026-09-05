@@ -1,66 +1,51 @@
 # Changelog
 
-An archive of this script's TradingView release notes. Each entry below the
-`Unreleased` section is paste-ready for TradingView's release notes field.
+An archive of this script's TradingView release notes. Each dated entry is
+paste-ready for TradingView's release notes field.
 
 ---
 
-## Unreleased — Internal refactor, intraday guard, offline test suite
+## 2026-09-05 — Naming fixes, timeframe warnings
 
-**No change to plotted values.** Every session high/low, label position, and line
-coordinate is bit-identical to the previous version, verified bar-by-bar by an
-automated differential test.
+This update corrects a naming mismatch between the settings panel and the chart
+labels, and makes the indicator tell you when a session cannot be drawn on your
+current timeframe instead of silently showing nothing.
 
 ### Fixed
 
-- **Input names now match the chart labels.** The toggle read *"Show New York
-  Close High/Low"* while the levels it controlled were labelled *"London Close
-  Killzone"* — a leftover from the 2025-08-22 rename. Checking the box looked like
-  it did nothing, or like it drew the wrong session. All four toggles and their
-  color/width inputs now use the killzone names shown on the chart: London Open,
-  New York AM, Asian Range, London Close.
-- **Sessions that never fire are now reported.** A session only registers if some
-  bar *opens* inside its window. On a 4h chart a 2-hour window can contain zero bar
-  opens, so the session silently never drew anything. An orange warning label now
-  appears on the last bar naming the session and the timeframe. Which sessions are
-  affected depends on the timeframe *and* on daylight saving; use 30m or lower.
+- **Session toggles now match the labels on the chart.** The setting previously
+  named *"Show New York Close High/Low"* controlled the levels labelled *"London
+  Close Killzone"* — a leftover from the 2025-08-22 rename to ICT terminology.
+  Checking it looked like it did nothing, or like it drew the wrong session. All
+  four sessions now use one consistent name in the settings and on the chart:
+  **London Open**, **New York AM**, **Asian Range**, **London Close**.
 
 ### Added
 
-- **Intraday guard.** The indicator now raises a clear error instead of silently
-  drawing wrong levels when applied to a 1D-or-higher timeframe. Session windows
-  are meaningless once a single candle spans the whole day:
-  `This indicator requires an intraday timeframe (< 1D).`
-- **Offline test suite** (`tests.mjs`, runs on Node via PineTS). Four groups:
-  differential vs. the previous version, no-repaint prefix-invariance, session
-  staleness, and a simulated Friday-17:00→Sunday-17:00 market close.
-- **16 hidden plots** (`display=display.none`) exposing each session's
-  high/low/high-bar/low-bar as stable test hooks. Invisible on the chart and in
-  the Data Window.
+- **A warning when a session cannot be drawn on your timeframe.** A session is
+  only detected if a bar *opens* inside its window. On 3h and 4h charts a 2-hour
+  killzone can contain no bar opens at all, so those levels silently never
+  appeared. The indicator now says so on the chart, naming the session and the
+  timeframe. Which sessions are affected also shifts with daylight saving.
 
-### Changed
+  **Use 30m or lower for all four killzones to work correctly.** Note that New
+  York AM starts at 08:30, which no hourly bar aligns to — on a 1h chart that
+  level is really the 09:00–11:00 range, not 08:30–11:00.
 
-- **Unified the four duplicated session blocks into a single `trackSession()`
-  function.** 197 → 112 lines. Uses Pine's function-local `var` (each call site
-  holds independent state) rather than arrays or UDTs, deliberately avoiding
-  container rollback behaviour on realtime bars.
-- Corrected a stale comment that described the Asia session as Taipei
-  07:00–16:00; it has been NY 20:00–24:00 since the 2025-08-22 release.
-- Session labels are now derived from a single name per session rather than two
-  hand-written strings, so the toggle, the color input and the chart label cannot
-  drift apart again.
-- Renamed the internal identifiers for the fourth session from `nyClose` /
-  `newYorkClose` to `londonClose`, matching what it has actually measured since
-  2025-08-22. They were the same naming drift that produced the visible bug above,
-  one layer down. Purely internal — no change to inputs, output or saved settings.
-- Aligned the fourth session's input title with the other three
-  (`London Close [NY time]`).
+- **An explicit error on daily and higher timeframes.** Session windows are
+  meaningless once a single candle spans the whole day. The indicator now refuses
+  to load rather than drawing misleading levels.
 
-### Removed
+### Unchanged
 
-- Four redundant state variables. `*HighStartBar` and `*LowStartBar` were always
-  assigned together at session start and never diverged; merged into a single
-  `startBar` per session.
+- **Every session high and low is identical to the previous version**, verified
+  bar by bar against the 2025-08-22 release. This update changes naming, adds
+  warnings, and cleans up the code internally — it does not move a single level.
+
+### Now open source
+
+Full source, documentation and an offline test suite:
+https://github.com/tc3oliver/tradingview-indicators
 
 ---
 
@@ -137,6 +122,27 @@ hunting, trend trading, and breakout strategies.
 ---
 
 ## Maintainer notes (do not paste into TradingView)
+
+### 2026-09-05 internal changes
+
+Not in the published notes because they are invisible to users:
+
+- Unified the four duplicated session blocks into a single `trackSession()`
+  function, 197 -> 128 lines. Uses Pine's function-local `var` (independent state
+  per call site) rather than arrays or UDTs, deliberately avoiding container
+  rollback behaviour on realtime bars.
+- Renamed the fourth session's internal identifiers from `nyClose` /
+  `newYorkClose` to `londonClose` — the same naming drift that caused the visible
+  bug, one layer down.
+- Removed four redundant state variables; `*HighStartBar` and `*LowStartBar` never
+  diverged and were merged into a single `startBar` per session.
+- Added 16 `display=display.none` plots as stable test hooks, and an offline test
+  suite (`tests.mjs`) with five groups: differential against the frozen
+  pre-refactor baseline, no-repaint prefix invariance, session staleness,
+  simulated weekend gap, and coarse-timeframe warning coverage.
+- The warning label is held in a `var` and deleted before redraw: `barstate.islast`
+  is true on every forming bar and the label commits at bar close, so without the
+  delete one label accumulates per bar.
 
 ### How the session definitions evolved
 
