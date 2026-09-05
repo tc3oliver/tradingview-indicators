@@ -49,6 +49,12 @@ automated differential test.
 - Session labels are now derived from a single name per session rather than two
   hand-written strings, so the toggle, the color input and the chart label cannot
   drift apart again.
+- Renamed the internal identifiers for the fourth session from `nyClose` /
+  `newYorkClose` to `londonClose`, matching what it has actually measured since
+  2025-08-22. They were the same naming drift that produced the visible bug above,
+  one layer down. Purely internal — no change to inputs, output or saved settings.
+- Aligned the fourth session's input title with the other three
+  (`London Close [NY time]`).
 
 ### Removed
 

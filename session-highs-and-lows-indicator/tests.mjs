@@ -13,7 +13,7 @@ const SESSIONS = {
   london:  { from: 3,   to: 5,  old: 'london',       plot: 'london' },
   newYork: { from: 8.5, to: 11, old: 'newYork',      plot: 'newYork' },
   asia:    { from: 20,  to: 24, old: 'asia',         plot: 'asia' },
-  nyClose: { from: 10,  to: 12, old: 'newYorkClose', plot: 'nyClose' },
+  londonClose: { from: 10,  to: 12, old: 'newYorkClose', plot: 'londonClose' },
 };
 const FIELDS = ['hi', 'lo', 'hiBar', 'loBar'];
 const OLD_SUFFIX = { hi: 'High', lo: 'Low', hiBar: 'HighBar', loBar: 'LowBar' };
@@ -181,7 +181,7 @@ gapStale.forEach((s) => console.log(`                   ${s}`));
 // 2-hour window can contain zero bar opens and the session silently never
 // fires. Every enabled session that never fires must say so on the chart.
 const before4 = fail.length;
-const COLORS = { london: '#47abfd', newYork: '#ff6565', asia: '#75ff79', nyClose: '#ff9f43' };
+const COLORS = { london: '#47abfd', newYork: '#ff6565', asia: '#75ff79', londonClose: '#ff9f43' };
 const noGuard = NEW.replace(/if not timeframe\.isintraday[\s\S]*?runtime\.error\([^\n]*\n/, '');
 const coarse = [];
 for (const tf of ['1h', '3h', '4h']) {
@@ -192,7 +192,7 @@ for (const tf of ['1h', '3h', '4h']) {
   check(warns.length === silent.length,
     `warning ${tf}: ${silent.length} session(s) never fired (${silent.map(([k]) => k).join(',') || 'none'}) but ${warns.length} warning(s) shown`);
   for (const [k] of silent) {
-    check(warns.some((w) => String(w.text).includes(k === 'nyClose' ? 'London Close' : k === 'newYork' ? 'New York AM' : k === 'london' ? 'London Open' : 'Asian Range')),
+    check(warns.some((w) => String(w.text).includes(k === 'londonClose' ? 'London Close' : k === 'newYork' ? 'New York AM' : k === 'london' ? 'London Open' : 'Asian Range')),
       `warning ${tf}: session ${k} never fired but is not named in any warning`);
   }
   coarse.push(`${tf}: ${silent.length} silent → ${warns.length} warned`);

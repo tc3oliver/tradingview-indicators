@@ -12,29 +12,29 @@ if not timeframe.isintraday and barstate.islast
 
 // ======== Visibility toggles ========
 // Names must match the killzone names used on the chart labels below.
-showLondon       = input.bool(true, "Show London Open Killzone")
-showNewYork      = input.bool(true, "Show New York AM Killzone")
-showAsia         = input.bool(true, "Show Asian Range")
-showNewYorkClose = input.bool(true, "Show London Close Killzone")
+showLondon      = input.bool(true, "Show London Open Killzone")
+showNewYork     = input.bool(true, "Show New York AM Killzone")
+showAsia        = input.bool(true, "Show Asian Range")
+showLondonClose = input.bool(true, "Show London Close Killzone")
 
 // ======== Line styling ========
-londonColor   = input.color(color.new(#47abfd, 70), "London Open Line Color")
-londonWidth   = input.int(1, "London Open Line Width", minval=1, maxval=5)
+londonColor      = input.color(color.new(#47abfd, 70), "London Open Line Color")
+londonWidth      = input.int(1, "London Open Line Width", minval=1, maxval=5)
 
-newYorkColor  = input.color(color.new(#ff6565, 70), "New York AM Line Color")
-newYorkWidth  = input.int(1, "New York AM Line Width", minval=1, maxval=5)
+newYorkColor     = input.color(color.new(#ff6565, 70), "New York AM Line Color")
+newYorkWidth     = input.int(1, "New York AM Line Width", minval=1, maxval=5)
 
-nyCloseColor  = input.color(color.new(#ff9f43, 70), "London Close Line Color")
-nyCloseWidth  = input.int(1, "London Close Line Width", minval=1, maxval=5)
+londonCloseColor = input.color(color.new(#ff9f43, 70), "London Close Line Color")
+londonCloseWidth = input.int(1, "London Close Line Width", minval=1, maxval=5)
 
-asiaColor     = input.color(color.new(#75ff79, 70), "Asian Range Line Color")
-asiaWidth     = input.int(1, "Asian Range Line Width", minval=1, maxval=5)
+asiaColor        = input.color(color.new(#75ff79, 70), "Asian Range Line Color")
+asiaWidth        = input.int(1, "Asian Range Line Width", minval=1, maxval=5)
 
 // --- SMC/ICT Sessions in New York time (DST-safe via America/New_York) ---
-asianRangeSession = input.session("2000-0000", "Asian Range [NY time]")
-londonSession     = input.session("0300-0500", "London Open [NY time]")
-newYorkSession    = input.session("0830-1100", "New York AM [NY time]")
-nyCloseSession    = input.session("1000-1200", "London Close Killzone (NY time)")
+asianRangeSession  = input.session("2000-0000", "Asian Range [NY time]")
+londonSession      = input.session("0300-0500", "London Open [NY time]")
+newYorkSession     = input.session("0830-1100", "New York AM [NY time]")
+londonCloseSession = input.session("1000-1200", "London Close [NY time]")
 
 TZ = "America/New_York"
 
@@ -105,24 +105,24 @@ trackSession(sess, show, col, wid, name) =>
 [asiaHigh, asiaLow, asiaHighBar, asiaLowBar] =
   trackSession(asianRangeSession, showAsia, asiaColor, asiaWidth, "Asian Range")
 
-[newYorkCloseHigh, newYorkCloseLow, newYorkCloseHighBar, newYorkCloseLowBar] =
-  trackSession(nyCloseSession, showNewYorkClose, nyCloseColor, nyCloseWidth, "London Close Killzone")
+[londonCloseHigh, londonCloseLow, londonCloseHighBar, londonCloseLowBar] =
+  trackSession(londonCloseSession, showLondonClose, londonCloseColor, londonCloseWidth, "London Close Killzone")
 
 // ======== Test hooks — hidden from the chart and the Data Window ========
 // Read by tests.mjs to reconcile against independently computed ground truth.
-plot(londonHigh,           "london_hi",       display=display.none)
-plot(londonLow,            "london_lo",       display=display.none)
-plot(londonHighBar,        "london_hiBar",    display=display.none)
-plot(londonLowBar,         "london_loBar",    display=display.none)
-plot(newYorkHigh,          "newYork_hi",      display=display.none)
-plot(newYorkLow,           "newYork_lo",      display=display.none)
-plot(newYorkHighBar,       "newYork_hiBar",   display=display.none)
-plot(newYorkLowBar,        "newYork_loBar",   display=display.none)
-plot(asiaHigh,             "asia_hi",         display=display.none)
-plot(asiaLow,              "asia_lo",         display=display.none)
-plot(asiaHighBar,          "asia_hiBar",      display=display.none)
-plot(asiaLowBar,           "asia_loBar",      display=display.none)
-plot(newYorkCloseHigh,     "nyClose_hi",      display=display.none)
-plot(newYorkCloseLow,      "nyClose_lo",      display=display.none)
-plot(newYorkCloseHighBar,  "nyClose_hiBar",   display=display.none)
-plot(newYorkCloseLowBar,   "nyClose_loBar",   display=display.none)
+plot(londonHigh,         "london_hi",         display=display.none)
+plot(londonLow,          "london_lo",         display=display.none)
+plot(londonHighBar,      "london_hiBar",      display=display.none)
+plot(londonLowBar,       "london_loBar",      display=display.none)
+plot(newYorkHigh,        "newYork_hi",        display=display.none)
+plot(newYorkLow,         "newYork_lo",        display=display.none)
+plot(newYorkHighBar,     "newYork_hiBar",     display=display.none)
+plot(newYorkLowBar,      "newYork_loBar",     display=display.none)
+plot(asiaHigh,           "asia_hi",           display=display.none)
+plot(asiaLow,            "asia_lo",           display=display.none)
+plot(asiaHighBar,        "asia_hiBar",        display=display.none)
+plot(asiaLowBar,         "asia_loBar",        display=display.none)
+plot(londonCloseHigh,    "londonClose_hi",    display=display.none)
+plot(londonCloseLow,     "londonClose_lo",    display=display.none)
+plot(londonCloseHighBar, "londonClose_hiBar", display=display.none)
+plot(londonCloseLowBar,  "londonClose_loBar", display=display.none)
