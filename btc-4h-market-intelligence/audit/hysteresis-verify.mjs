@@ -26,26 +26,33 @@ const n = bars.length;
 // demoted to IMPULSE by smoothing-audit.mjs precisely because no configuration
 // of this trigger made them readable; they now hold no state to verify.
 // OI 24H is fed the EMA(2)-smoothed z, which is what the indicator uses.
+// v3: the ladder is driven by |z| ALONE and the sign comes from the raw value,
+// so the model below must do the same or it is describing a different machine.
+// `dir` names the raw-sign field; where it is null the raw value IS the
+// deviation and the signed Schmitt applies directly.
 const M = {
-  'OI 24H': { z: 'oiZ24s',    pine: 'oi24St', levels: 2, e1: 1.0, x1: 0.6, e2: 2.0, x2: 1.25 },
-  'TREND':  { z: 'trendDist', pine: 'trSt',   levels: 1, e1: 0.5, x1: 0.2 },
+  'OI 24H': { z: 'oiZ24s',    dir: 'oi24Dir', pine: 'oi24St', levels: 2, e1: 1.0, x1: 0.6, e2: 2.0, x2: 1.25 },
+  'TREND':  { z: 'trendDist', dir: null,      pine: 'trSt',   levels: 1, e1: 0.5, x1: 0.2 },
 };
 
 // --- the three state machines under comparison ---
 
-// No hysteresis: a bare threshold, re-evaluated every bar.
-function raw(zs, e1, e2) {
-  return zs.map((z) => {
+// No hysteresis: a bare threshold on |z|, re-evaluated every bar, signed by the
+// raw direction exactly as the indicator signs it.
+function raw(zs, e1, e2, dirs) {
+  return zs.map((z, i) => {
     if (!Number.isFinite(z)) return 0;
-    const a = Math.abs(z), s = z >= 0 ? 1 : -1;
-    if (e2 !== undefined && a >= e2) return 2 * s;
-    return a >= e1 ? s : 0;
+    const a = Math.abs(z);
+    const s = dirs ? (dirs[i] || 0) : (z >= 0 ? 1 : -1);
+    const lvl = e2 !== undefined && a >= e2 ? 2 : a >= e1 ? 1 : 0;
+    return lvl * s;
   });
 }
 
 // Two-bar confirmation: the alternative that trades delay for stability.
-function confirmed(zs, e1, e2, k = 2) {
-  const r = raw(zs, e1, e2);
+function confirmed(zs, e1, e2, dirs, k = 2) {
+  const r = raw(zs, e1, e2, dirs);
+  const n = zs.length;
   const out = new Array(n).fill(0);
   let st = 0;
   for (let i = 0; i < n; i++) {
@@ -58,27 +65,32 @@ function confirmed(zs, e1, e2, k = 2) {
 }
 
 // Schmitt: same entry threshold as raw, a lower exit threshold. Mirrors the
-// Pine sch1/sch2 line for line.
-function schmitt(zs, cfg) {
+// Pine mag()/sch() functions line for line, including the v3 na-reset.
+function schmitt(zs, cfg, dirs) {
   const out = new Array(n).fill(0);
-  let lvl = 0, sgn = 0;
+  let lvl = 0, st = 0;
   for (let i = 0; i < n; i++) {
     const z = zs[i];
-    if (Number.isFinite(z)) {
-      const a = Math.abs(z), s = z >= 0 ? 1 : -1;
-      if (cfg.levels === 1) {
-        if (lvl === 0) { if (a >= cfg.e1) { lvl = 1; sgn = s; } }
-        else if (s !== sgn) { lvl = 0; sgn = 0; }
-        else if (a < cfg.x1) { lvl = 0; sgn = 0; }
-      } else {
-        if (lvl === 0) { if (a >= cfg.e1) { lvl = a >= cfg.e2 ? 2 : 1; sgn = s; } }
-        else if (s !== sgn) { lvl = 0; sgn = 0; }
-        else if (a < cfg.x1) { lvl = 0; sgn = 0; }
+    if (cfg.levels === 1) {
+      // sch(): the raw value is itself the deviation, so the state is signed.
+      if (!Number.isFinite(z)) st = 0;
+      else if (st === 0) st = z >= cfg.e1 ? 1 : z <= -cfg.e1 ? -1 : 0;
+      else if (st === 1 && z < cfg.x1) st = 0;
+      else if (st === -1 && z > -cfg.x1) st = 0;
+      out[i] = st;
+    } else {
+      // mag(): magnitude only. No sign flip can reset it — the direction word
+      // is a separate axis and lives on the raw value.
+      if (!Number.isFinite(z)) lvl = 0;
+      else {
+        const a = Math.abs(z);
+        if (lvl === 0) lvl = a >= cfg.e2 ? 2 : a >= cfg.e1 ? 1 : 0;
+        else if (a < cfg.x1) lvl = 0;
         else if (lvl === 2 && a < cfg.x2) lvl = 1;
         else if (lvl === 1 && a >= cfg.e2) lvl = 2;
       }
+      out[i] = lvl * (dirs ? (dirs[i] || 0) : (Number.isFinite(z) && z < 0 ? -1 : 1));
     }
-    out[i] = lvl * sgn;
   }
   return out;
 }
@@ -138,7 +150,8 @@ console.log('\n--- cross-check against the compiled indicator ---');
 let mismatchTotal = 0;
 for (const [name, cfg] of Object.entries(M)) {
   const zs = bars.map((b) => b[cfg.z]);
-  const js = schmitt(zs, cfg);
+  const dirs = cfg.dir ? bars.map((b) => b[cfg.dir]) : null;
+  const js = schmitt(zs, cfg, dirs);
   const pine = bars.map((b) => b[cfg.pine]);
   let bad = 0, firstBad = -1;
   for (let i = 0; i < n; i++) {
@@ -161,9 +174,10 @@ console.log('  measure     variant        transitions  median dur  events  retai
 const summary = [];
 for (const [name, cfg] of Object.entries(M)) {
   const zs = bars.map((b) => b[cfg.z]);
-  const r = raw(zs, cfg.e1, cfg.levels === 2 ? cfg.e2 : undefined);
-  const h = schmitt(zs, cfg);
-  const c = confirmed(zs, cfg.e1, cfg.levels === 2 ? cfg.e2 : undefined);
+  const dirs = cfg.dir ? bars.map((b) => b[cfg.dir]) : null;
+  const r = raw(zs, cfg.e1, cfg.levels === 2 ? cfg.e2 : undefined, dirs);
+  const h = schmitt(zs, cfg, dirs);
+  const c = confirmed(zs, cfg.e1, cfg.levels === 2 ? cfg.e2 : undefined, dirs);
   const rows = [
     ['raw threshold', r],
     ['schmitt', h],

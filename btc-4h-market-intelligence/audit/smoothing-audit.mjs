@@ -48,10 +48,10 @@ const { hash, bars } = JSON.parse(readFileSync(new URL('./states.json', import.m
 const n = bars.length;
 
 const M = {
-  'OI 4H':    { z: 'oiZ4',   levels: 2, e1: 1.0, x1: 0.6, e2: 2.0, x2: 1.25 },
-  'OI 24H':   { z: 'oiZ24',  levels: 2, e1: 1.0, x1: 0.6, e2: 2.0, x2: 1.25 },
-  'PREMIUM':  { z: 'premZ',  levels: 1, e1: 2.0, x1: 1.25 },
-  'PARTICIP': { z: 'partZ',  levels: 1, e1: 1.0, x1: 0.6 },
+  'OI 4H':    { z: 'oiZ4',   dir: 'oi4Dir',  levels: 2, e1: 1.0, x1: 0.6, e2: 2.0, x2: 1.25 },
+  'OI 24H':   { z: 'oiZ24',  dir: 'oi24Dir', levels: 2, e1: 1.0, x1: 0.6, e2: 2.0, x2: 1.25 },
+  'PREMIUM':  { z: 'premZ',  dir: 'pmDir',   levels: 1, e1: 2.0, x1: 1.25 },
+  'PARTICIP': { z: 'partZ',  dir: 'ptDir',   levels: 1, e1: 1.0, x1: 0.6 },
 };
 const CANDIDATES = [0, 2, 3, 4];          // 0 = no smoothing
 const TIERS = [1.5, 2.0, 2.5];
@@ -67,21 +67,25 @@ const ema = (v, p) => {
   });
 };
 
-function schmitt(zs, cfg) {
+// v3 mag(): the ladder reads |z| only. A sign flip no longer resets it, because
+// the direction word is a separate axis taken from the raw value. `dirs` is the
+// raw-sign series; the printed label is level x direction, and it is the label
+// that has to stop flickering.
+function schmitt(zs, cfg, dirs) {
   const out = new Array(zs.length).fill(0);
-  let lvl = 0, sgn = 0;
+  let lvl = 0;
   for (let i = 0; i < zs.length; i++) {
     const z = zs[i];
-    if (Number.isFinite(z)) {
-      const a = Math.abs(z), s = z >= 0 ? 1 : -1;
-      if (lvl === 0) {
-        if (a >= cfg.e1) { lvl = cfg.levels === 2 && a >= cfg.e2 ? 2 : 1; sgn = s; }
-      } else if (s !== sgn) { lvl = 0; sgn = 0; }
-      else if (a < cfg.x1) { lvl = 0; sgn = 0; }
+    if (!Number.isFinite(z)) lvl = 0;
+    else {
+      const a = Math.abs(z);
+      if (lvl === 0) lvl = cfg.levels === 2 && a >= cfg.e2 ? 2 : a >= cfg.e1 ? 1 : 0;
+      else if (a < cfg.x1) lvl = 0;
       else if (cfg.levels === 2 && lvl === 2 && a < cfg.x2) lvl = 1;
       else if (cfg.levels === 2 && lvl === 1 && a >= cfg.e2) lvl = 2;
     }
-    out[i] = lvl * sgn;
+    const s = dirs ? (dirs[i] || 0) : (Number.isFinite(z) && z < 0 ? -1 : 1);
+    out[i] = lvl * s;
   }
   return out;
 }
@@ -172,13 +176,14 @@ console.log('='.repeat(118));
 const results = {};
 for (const [name, cfg] of Object.entries(M)) {
   const rawZ = bars.map((b) => b[cfg.z]);
+  const dirs = bars.map((b) => b[cfg.dir]);
   const evEnter = rawEvents(rawZ, cfg.e1);      // events at this measure's own entry level
   console.log(`\n${'-'.repeat(118)}\n${name}   raw z, enter ${cfg.e1}σ / exit ${cfg.x1}σ   —   ${evEnter.length} raw crossings of the entry level\n${'-'.repeat(118)}`);
   console.log('  smoothing   label dur  engaged dur   transitions   false flips   det delay med/P90/max   retention 1.5σ/2.0σ/2.5σ   peak attn');
   results[name] = [];
   for (const p of CANDIDATES) {
     const smZ = ema(rawZ, p);
-    const st = schmitt(smZ, cfg);
+    const st = schmitt(smZ, cfg, dirs);
     const eps = episodes(st);
     const engagedLens = eps.map(([a, b]) => b - a + 1);
     const lens = labelRuns(st);
@@ -249,11 +254,12 @@ ${'='.repeat(118)}
 PRODUCT SHAPE
 ${'='.repeat(118)}`);
 console.log('  REGIME   persistent state, appears in WHAT CHANGED as a regime transition');
-console.log('  IMPULSE  raw and smoothed z shown, one-shot spike alert, NO persistent state,');
+console.log('  IMPULSE  raw value + percentile + raw z shown, one-shot spike alert,');
+console.log('           NO persistent state and no smoothing at all,');
 console.log('           NOT a regime transition in WHAT CHANGED');
 console.log('  CONTEXT  slow external feeds, shown when available\n');
 console.log('  TREND          REGIME   no smoothing — median 9 bars after hysteresis already');
 for (const [name, d] of Object.entries(decisions))
-  console.log(`  ${name.padEnd(14)} ${d.type.padEnd(8)} ${d.type === 'REGIME' ? (d.p === 0 ? 'no smoothing' : `EMA(${d.p})`) : 'raw + smoothed z displayed, spike alert only'}`);
+  console.log(`  ${name.padEnd(14)} ${d.type.padEnd(8)} ${d.type === 'REGIME' ? (d.p === 0 ? 'no smoothing' : `EMA(${d.p})`) : 'raw z, unsmoothed, spike alert only'}`);
 console.log('  ETF / SOPR / FUNDING   CONTEXT  external adapters, unavailable offline');
 console.log('\n  Raw z stays on the dashboard for every measure regardless of type.');

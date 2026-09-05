@@ -1,3 +1,211 @@
+# Audits
+
+- [V3 data-product audit](#v3-data-product-audit) — the current version
+- [Decision utility audit (v1)](#decision-utility-audit--market-intelligence-v1) — what deleted the action layer
+
+---
+
+# V3 DATA-PRODUCT AUDIT
+
+**Indicator** `main.pine`, threshold version `v3.0`
+**Window** 13,164 bars, 2020-09-01 → 2026-09-03
+**Reproduce**
+
+```bash
+npm test                                # 21 offline checks
+node audit/extract-states.mjs           # run the frozen indicator over the full window
+node audit/hysteresis-verify.mjs
+node audit/smoothing-audit.mjs
+node audit/oi4h-deseasonalization.mjs
+node audit/event-log.mjs
+```
+
+> This audit covers **data-product correctness only**: does the indicator say
+> true things about the data. It establishes nothing about predictive value, and
+> no test in it computes a forward return. The evidence level of every state is
+> still DESCRIPTIVE.
+
+## 1. Semantic correctness — the defect that made v3 necessary
+
+v2 fused direction and abnormality into one signed state, `sign(z) × |z|`. The
+direction word therefore came out of a z-score. With a sufficiently negative
+recent mean, a **−1.0% open-interest change printed as EXPANDING**. The measure
+was not noisy — it was wrong, and no filter fixes a wrong word.
+
+v3 separates the axes. Direction is `sign(raw)` and nothing else; intensity is
+the σ ladder. Eight invariants are asserted on every bar:
+
+| invariant | signed bars checked | violations |
+|---|---|---|
+| OI 24H EXPANSION ⟹ oiChg24h > 0, REDUCTION ⟹ < 0 | 1,494 | **0** |
+| OI 4H EXPANSION / REDUCTION | 1,499 | **0** |
+| POSITIVE / NEGATIVE PREMIUM ⟹ sign(premium) | 1,500 | **0** |
+| LONG / SHORT FUNDING ⟹ sign(funding) | 1,480 | **0** |
+| ETF INFLOW / OUTFLOW ⟹ sign(etf5d) | 1,470 | **0** |
+| LIQ BALANCE MORE LONG / SHORT ⟹ sign(balance) | 1,498 | **0** |
+| **total** | **8,941** | **0** |
+
+Trend and SOPR are separate: their raw value *is* the deviation, so the state
+sign equals the raw sign by construction. Asserted rather than assumed —
+0 disagreements.
+
+Participation is the deliberate exception. "Relative surge" is a claim about
+deviation from normal, so its word is z-driven and the vocabulary says
+`RELATIVE`. `SPOT DOMINANT` / `PERP DOMINANT` were removed from the source and a
+test asserts the strings are gone.
+
+### Cost of a raw-sign direction
+
+The direction axis has no hysteresis, by design. Measured, not assumed:
+
+| measure | consecutive engaged bars | direction flips | rate |
+|---|---|---|---|
+| OI 24H | 3,010 | 30 | **1.00%** |
+
+Small enough that the label does not rattle. Recorded because it is a real
+property of the design and could have gone the other way.
+
+## 2. A second correctness defect, found while rewriting
+
+v2 called stateful builtins inside ternary branches — `oiOK ? zOf(...) : na` and
+eight more. A `ta.*` function skipped on the bars its branch is not taken has
+holes in its internal window, which corrupts every later value silently. v3
+computes all of them unconditionally and masks afterwards. This is the kind of
+error that produces plausible numbers, which is why it survived two versions.
+
+## 3. Percentile validation
+
+| property | method | result |
+|---|---|---|
+| range | all seven percentile series, every bar | 0 violations outside [0,100] |
+| order-correctness | on real data: where a raw value is the unique max of its 180-bar window the rank must be at the top of the scale, and vice versa | 103 window extremes checked, **0 wrong** |
+| fixture | `ta.percentrank(close, 20)` on a strictly rising synthetic series | 100 on all 75 post-warmup bars; strictly falling series maxes at 0 |
+
+Both the range and order tests hold under either convention for whether the
+current bar counts itself, so neither bakes in an assumption about TradingView's
+tie handling.
+
+**Not resolved:** the intensity word comes from the σ ladder while the displayed
+abnormality is a percentile. They are not the same statistic. The σ ladder was
+kept because the smoothing and hysteresis audits are expressed in σ and were run
+against σ thresholds; moving the ladder to percentiles would invalidate both
+without being measured. Recorded as a known inconsistency, not as a resolved
+question.
+
+## 4. Hysteresis
+
+The JavaScript model is cross-checked against the compiled Pine on all 13,164
+bars before any number is reported — **identical on every bar**, both measures.
+
+| measure | transitions raw → schmitt | median label run | retention | median delay |
+|---|---|---|---|---|
+| OI 24H | 2016 → 1784 (−12%) | 2 → **3** | 100% | **0** |
+| TREND | 223 → 169 (−24%) | 5 → **9** | 99% | **0** |
+
+Two-bar confirmation reaches similar stability only by losing 20% of events and
+delaying every entry by up to eight hours. Readability property only; no
+predictive claim.
+
+The v3 ladder reads magnitude alone, so a z sign flip no longer resets it. The
+`mag()` and `sch()` functions also reset to 0 when their input is `na`, so a feed
+that goes stale cannot leave its last reading standing as a live anomaly.
+
+## 5. Smoothing — unchanged conclusions under the v3 machine
+
+Re-run with the magnitude-only ladder and raw-sign direction:
+
+| measure | verdict |
+|---|---|
+| OI 24H | **REGIME with EMA(2)** — the only candidate clearing every gate |
+| OI 4H | IMPULSE — EMA(3) cut 1.5σ retention to 72% and the peak to 0.51 |
+| PREMIUM | IMPULSE — EMA(2) lost 46% of its 2σ events |
+| PARTICIP | IMPULSE — every candidate left a P90 delay of 3–5 bars |
+| TREND | REGIME, no smoothing — already a 9-bar median run |
+
+## 6. OI 4H de-seasonalization — tested, REJECTED
+
+Pre-registered before the first run: three variants, six signal-quality metrics,
+a four-part adoption rule, and ground truth defined on the **raw** percentage
+change so the incumbent was not handed the win. No forward return, MAE, MFE or
+Sharpe appears in the script.
+
+A UTC-slot effect does exist — per-slot standard deviation varies **1.39×**
+between the widest and narrowest slot, so the question was worth asking.
+
+| variant | fires | false spikes | retention 1% / 0.5% / 0.1% | med delay | peak \|z\| | flip rate |
+|---|---|---|---|---|---|---|
+| **A** rolling 180 | 20.0% | **0.1%** (2) | 94% / 97% / 92% | 0 | 5.57 | 28.1% |
+| B30 same-slot 30d | 25.2% | 8.6% (283) | 98% / 98% / 92% | 0 | 8.99 | 34.6% |
+| B60 same-slot 60d | 23.1% | 5.1% (153) | 98% / 98% / 92% | 0 | 7.61 | 31.7% |
+
+| gate | B30 | B60 |
+|---|---|---|
+| false-spike rate ≥20% lower than A | FAIL | FAIL |
+| retention within 2pp at every tier | PASS | PASS |
+| median detection delay equal to A | PASS | PASS |
+| impulse frequency within ±25% of A | FAIL | PASS |
+| **verdict** | **REJECT** | **REJECT** |
+
+A 30-day same-slot window holds ~30 observations, so its standard deviation is
+small and ordinary moves score high: false spikes rise from 2 to 283. The +4pp
+retention gain at the 1% tier does not pay for that. **OI 4H keeps the rolling
+z-score and stays an IMPULSE.** Nothing was re-tuned after seeing these numbers.
+
+## 7. Stale and missing data
+
+| scenario | required behaviour | result |
+|---|---|---|
+| adapter off | UNAVAILABLE, no value, no level, no anomaly | 0 leaks across 4 adapters × 1,500 bars |
+| feed absent (SOPR) | same | 0 values, 0 states, 0 anomalies |
+| feed freezes mid-run | STALE within 6 bars, readings stop | 0 levels and 0 values after the freeze |
+| adapter enabled, still on chart close | **MISCONFIGURED**, distinct from STALE and UNAVAILABLE | all 1,500 bars, and shown as such on the dashboard |
+| adapter with < 50 bars of history | cannot yet be distinguished from close → MISCONFIGURED | conservative by design |
+
+Freshness for exchange feeds is measured against the **bar timestamp the symbol
+returned**, not against whether the value changed. `request.security()` carries
+the last value forward, which is indistinguishable from a fresh repeat unless
+the times are compared.
+
+## 8. Table capacity
+
+Worst case — 9 anomalies, 5 events, all four adapters live — measured at
+**51 of 64** allocated rows. Every cell write is bounds-guarded, so exceeding
+capacity would drop rows rather than corrupt the table. Section order is
+asserted against the specification.
+
+## 9. Cohort integrity
+
+A prospective log belongs to one cohort, identified by schema version, freeze
+date, `sha256(main.pine)`, `sha256(all input defaults)` and an explicitly bumped
+`THRESHOLD-VERSION`. All four routing branches are unit-tested:
+
+| situation | action |
+|---|---|
+| same cohort | append |
+| no log yet | create `event-log.json` |
+| different cohort | **REFUSE, exit 1**, print which field moved |
+| different cohort + `--new-cohort` | create `event-log-v3-<id>.json` |
+| pre-v3 file with no cohort stamp | **REFUSE** |
+
+`event-log-v2-legacy.json` is the v2 cohort's file. It recorded zero events and
+is kept unmerged.
+
+## 10. What did NOT pass, and what is not covered
+
+| item | status |
+|---|---|
+| same-slot OI 4H normalisation | **REJECTED** by its own pre-registered rule |
+| σ ladder vs percentile display | known inconsistency, documented, not resolved |
+| spot / perp RVOL product shape | classified IMPULSE **by analogy**, never separately audited |
+| direction-axis hysteresis | none by design; the 1.00% flip rate is the cost |
+| `request.security_lower_tf()` | untested offline — no intrabar series in the harness |
+| `input.source()` picker | untested offline — the suite substitutes a series at the declaration |
+| `request.footprint()` | untestable offline; isolated in `footprint-live.pine`, marked LIVE / DESCRIPTIVE ONLY |
+| symbol spelling, history depth, layout, alert delivery | TradingView only — `TRADINGVIEW-VALIDATION.md` |
+| any predictive claim | **none made, none tested, none supported** |
+
+---
+
 # Decision Utility Audit — Market Intelligence v1
 
 **Frozen hash** `35b88632358a1b2506b655c9297b2ea593595c9571bc1623a883c7605826235e`

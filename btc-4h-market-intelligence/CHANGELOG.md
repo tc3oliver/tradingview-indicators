@@ -1,0 +1,114 @@
+# Changelog — BTC 4H Market Radar
+
+Paste-ready release notes for TradingView. Newest first.
+
+---
+
+## v3 — fix semantics, add operational intelligence
+
+**This version exists because v2 could print a false statement about the data.**
+States were stored as `sign(z) × |z|`, so the direction word came out of a
+z-score. With a sufficiently negative recent mean, a **−1.0% open-interest
+change printed as EXPANDING**. Two axes had been fused into one number.
+
+### Corrected
+
+- **Direction and abnormality are now separate.** Every label is
+  `<intensity> <direction>`. Direction is the sign of the **raw** measurement and
+  nothing else; intensity is the σ ladder. Eight invariants (OI expansion,
+  premium sign, funding sign, ETF flow, liquidation balance) are asserted on
+  every bar of the test window — 0 violations in 8,941 signed observations.
+- **One BTC price source.** Every price-derived feature — return, ATR, realised
+  volatility, 24H change, trend distance, daily 200MA, 12-week momentum, perp
+  RVOL, the premium numerator — now comes from a reference symbol, default
+  `BINANCE:BTCUSDT.P`. v2 mixed the chart's own `close` with fixed BTC
+  derivatives symbols, so the readings changed depending on which chart you put
+  it on. The chart's `close` is now read in exactly one place: detecting an
+  unwired adapter.
+- **Exactly 4H, enforced.** 24H = 6 bars, same-slot RVOL, OI 24H and every event
+  window are written in 4H bars. Any other timeframe now raises a runtime error
+  instead of silently redefining "24H".
+- **Stateful builtins are no longer called inside ternary branches.** v2 did this
+  on nine series; a `ta.*` function skipped on the bars its branch is not taken
+  has holes in its window, which corrupts every later value silently.
+- **A stale feed can no longer leave a live anomaly standing.** The hysteresis
+  ladder resets when its input goes `na`.
+- **An adapter with under 50 bars of history reads MISCONFIGURED, not FRESH.**
+  It cannot yet be distinguished from the chart's close, and an unproven adapter
+  must not produce readings.
+
+### Added
+
+- **Percentile first.** Every row leads with the raw value, then its empirical
+  percentile rank over the same window, then σ as secondary text. Crypto
+  distributions are not normal; a σ implies one. Anomalies are ranked by
+  `max(p, 100−p)`.
+- **RECENT EVENTS** — the last five confirmed events with their age, so a glance
+  answers "what did I miss". Written only on a confirmed 4H close, never twice
+  in a row for the same line.
+- **MARKET MECHANICS**, replacing v2's alignment count. `5/5 ALIGNED` was a
+  number with no referent — those are five different quantities with different
+  economics. The replacement is the one pairing that has a definition rather than
+  a vote: price direction × position direction over the same 24 hours.
+- **Long and short liquidation adapters**, each with its own enable toggle,
+  source, freshness, percentile, spike detection and alert, plus a unit-free
+  LIQ BALANCE. Spikes fire on the upper tail only — a quiet bar is not
+  "unusually few liquidations".
+- **DATA HEALTH** — nine feeds, each showing FRESH / 1 BAR OLD / 1D OLD / STALE /
+  MISCONFIGURED / UNAVAILABLE, with alerts on becoming stale and on recovering.
+  Freshness is measured against the bar timestamp the symbol actually returned,
+  not against whether the number changed.
+- **WHAT CHANGED** regrouped into NEW / NORMALIZED / CHANGED, and now fires on a
+  direction change at unchanged intensity.
+- **12-week momentum** row.
+- `footprint-live.pine` — a **separate**, optional, Premium-only companion for
+  live order flow, marked LIVE / DESCRIPTIVE ONLY. TradingView documents
+  footprint data as repainting by design, so it has no alerts and never enters
+  the prospective event log.
+
+### Renamed
+
+`SPOT DOMINANT` / `PERP DOMINANT` → `RELATIVE SPOT SURGE` / `RELATIVE PERP
+SURGE` / `NORMAL RELATIVE ACTIVITY`. The old words claimed dominance;
+`partRaw > 0` only means spot RVOL exceeded perp RVOL, which is true most of the
+time and means nothing on its own.
+
+`BULLISH` / `BEARISH` → `ABOVE 200D` / `BELOW 200D` / `NEAR 200D`.
+
+### Research
+
+- **OI 4H same-UTC-slot de-seasonalization: tested and REJECTED.** A slot effect
+  exists (per-slot σ varies 1.39×), but a 30-day same-slot window has a small
+  standard deviation, so ordinary moves score high — false spikes rose from 2 to
+  283. Pre-registered adoption rule, ground truth defined on the raw change, no
+  market outcome used anywhere.
+- **Prospective cohort integrity.** A log is stamped with schema, freeze,
+  indicator hash, config hash and threshold version. The event log now exits 1
+  rather than merge a new algorithm's rows into an old cohort's file.
+
+### Verification
+
+21 offline checks (was 9), including chart-symbol independence, semantic
+invariants, percentile correctness, liquidation adapters end-to-end, stale and
+misconfigured handling, recent-event dedup, market-mechanics arithmetic, table
+row capacity and cohort routing. Everything not provable offline is listed in
+`TRADINGVIEW-VALIDATION.md` as MANUAL REQUIRED rather than quietly dropped.
+
+### Unchanged
+
+No `BUY`, `SELL`, `LONG READY`, `DO NOT CHASE`, `REDUCE`, `RISK-ON` or
+`RISK-OFF`. Every state remains DESCRIPTIVE. Nothing here predicts anything.
+
+---
+
+## v2 — Market Radar
+
+Renamed from Market Intelligence. Action layer deleted after a matched-control
+audit failed all three candidates. Measures split into REGIME / IMPULSE /
+CONTEXT by a stability audit; hysteresis added for display stability only;
+WHAT CHANGED and an anomaly list added; USD-notional open interest rejected at
+runtime.
+
+## v1 — Market Intelligence
+
+First monitor build, with an action layer. See `audit/AUDIT.md`.

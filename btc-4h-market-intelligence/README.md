@@ -1,22 +1,24 @@
 # BTC 4H Market Radar
 
 A TradingView Pine Script v6 **monitor**. It watches open interest, funding,
-perpetual premium, spot-vs-perp participation, ETF flow and SOPR, normalises
-each against its own recent history, and answers three questions:
+perpetual premium, spot-vs-perp participation, liquidations, ETF flow and SOPR,
+normalises each against its own recent history, and answers four questions:
 
-1. **Which measurements are anomalous right now?**
-2. **What changed since the last confirmed bar?**
-3. **Which measurements agree with each other, and which conflict?**
+1. **What has happened recently?** — RECENT EVENTS
+2. **What is unusual right now?** — CURRENT ANOMALIES
+3. **What are price and positioning doing together?** — MARKET MECHANICS
+4. **Which feeds can I actually trust?** — DATA HEALTH
 
 It does not tell you what will happen next, and it does not suggest what to do.
 
 - **License**: [MPL-2.0](../LICENSE) © tc3oliver
-- **Decision-utility audit**: [`audit/AUDIT.md`](./audit/AUDIT.md)
+- **Audits**: [`audit/AUDIT.md`](./audit/AUDIT.md)
+- **Manual checklist**: [`TRADINGVIEW-VALIDATION.md`](./TRADINGVIEW-VALIDATION.md)
 - **Underlying research**: [`../btc-4h-regime-engine/RESEARCH-LOG.md`](../btc-4h-regime-engine/RESEARCH-LOG.md)
 
 ---
 
-## Why there is no signal and no action
+## 1. This is a radar, not a predictor
 
 An earlier version of this project was a trading engine with hard gates, a
 pullback-quality score and `LONG READY` output. Every load-bearing claim was
@@ -47,84 +49,298 @@ So this is a monitor. Everything it says is a description of a measurement.
 
 ---
 
-## Three product shapes
+## 2. Raw direction and abnormality are two different things
+
+This is the rule the whole of v3 is built on, and the bug that made v3
+necessary.
+
+> **The RAW value decides WHAT HAPPENED.**
+> **The PERCENTILE decides HOW UNUSUAL IT IS.**
+
+In v2 the two were fused: a state was `sign(z) × |z|`, so the direction word came
+out of a z-score. When the recent mean was strongly negative, an open-interest
+change of **−1.0%** could be printed as **EXPANDING**, because it was above
+average. That is a false statement about the data, and no amount of hysteresis
+or smoothing fixes it.
+
+In v3 every label is `<intensity> <direction>` and the two halves come from
+different places:
+
+| axis | source | vocabulary |
+|---|---|---|
+| direction | the sign of the **raw** measurement, nothing else | EXPANSION / REDUCTION, LONG / SHORT FUNDING, INFLOW / OUTFLOW, POSITIVE / NEGATIVE PREMIUM |
+| intensity | the σ ladder with hysteresis on the same window | NORMAL / UNUSUAL / EXTREME (funding: NORMAL / ELEVATED / EXTREME) |
+
+Eight invariants are asserted on every bar of the test window
+(`npm test`, check 1):
+
+```
+EXPANSION        ⟹  oiChg24h > 0        REDUCTION        ⟹  oiChg24h < 0
+INFLOW           ⟹  etf5d    > 0        OUTFLOW          ⟹  etf5d    < 0
+LONG FUNDING     ⟹  funding  > 0        SHORT FUNDING    ⟹  funding  < 0
+POSITIVE PREMIUM ⟹  premium  > 0        NEGATIVE PREMIUM ⟹  premium  < 0
+```
+
+Any violation fails the suite. Currently: **0 violations across 8,941 signed
+bar-observations.**
+
+### Why percentile is shown first
+
+Crypto returns are not normal, so a σ implies a distribution the data does not
+have. Every row leads with the raw value, then the empirical percentile rank of
+that value in the same 180-bar window, then σ as secondary text:
+
+```
+OI 24H       +4.71%   99.4p   +2.71σ    EXTREME EXPANSION
+PREMIUM *   -0.0488%  34.4p   -0.51σ    NORMAL
+FUNDING     +0.1859%  87.8p   +0.91σ    NORMAL
+```
+
+`99.4p` means "higher than 99.4% of the last 180 bars". It is the rank of the
+**raw** value, so on a two-sided measure a *low* percentile is just as extreme
+as a high one — `RELATIVE 2.2p` is a strong perp surge. Anomalies are therefore
+ranked by `max(p, 100−p)`, which makes no normality assumption at all.
+
+**Why the intensity word still comes from σ and not the percentile.** The
+smoothing and hysteresis audits are expressed in σ and were run against σ
+thresholds; rewiring the ladder to percentiles would invalidate them without
+being measured. σ drives the ladder, the percentile is what you read. Both are
+computed over the same window so they always describe the same history.
+
+### Participation is the one measure whose direction is *not* raw
+
+"Relative spot surge" is a claim about deviation from normal, which is a
+statement about the z-score, not about the ratio. The words say **RELATIVE
+SPOT SURGE / RELATIVE PERP SURGE / NORMAL RELATIVE ACTIVITY** precisely so they
+cannot be read as dominance. `partRaw > 0` only means spot RVOL exceeded perp
+RVOL, which is true most of the time and means nothing on its own. The v2 words
+`SPOT DOMINANT` / `PERP DOMINANT` no longer exist in the source, and a test
+asserts that.
+
+---
+
+## 3. One price source, one timeframe
+
+**Every price-derived feature comes from the BTC reference symbol**, default
+`BINANCE:BTCUSDT.P` — return, ATR, realised volatility, 24H change, trend
+distance, the daily 200MA, 12-week momentum, perp RVOL, and the numerator of the
+perp premium. `ta.atr()` would read the chart's own bars, so true range is
+rebuilt on the reference series instead.
+
+The chart's own `close` is read in exactly **one** place: detecting an
+`input.source()` adapter that is still pointed at it. Put the script on any
+chart you like — check 6 asserts all 22 radar series are bit-identical on a
+BTCUSDT.P chart and on a non-BTC chart.
+
+**The timeframe must be exactly 4H (240 minutes)** or the script refuses to run.
+This is not a preference. 24H is six bars, RVOL compares the same UTC slot on
+previous days, the OI 24H window and every event definition are all written in
+4H bars. On a 1H chart "24H" would silently mean four hours, and nothing would
+warn you.
+
+---
+
+## 4. What each measure answers
+
+| measure | question it answers | shape |
+|---|---|---|
+| TREND | where is price relative to the confirmed daily 200MA, in ATR? | REGIME |
+| VOLATILITY | how does current realised vol rank against six years? | REGIME |
+| MOMENTUM 12W | is price up or down over twelve weeks? | context |
+| OI 24H | did positioning build or unwind over a day, and how unusually? | REGIME (EMA 2) |
+| OI 4H | did positioning move sharply on **this** bar? | IMPULSE |
+| FUNDING | are perp longs or shorts paying, and how unusually? | CONTEXT (adapter) |
+| PREMIUM | is the perp trading above or below spot, and how unusually? | IMPULSE |
+| LONG / SHORT LIQ | was there an unusual burst of forced closing on either side? | CONTEXT (adapter) |
+| LIQ BALANCE | which side is being liquidated more, on a −1…+1 scale? | CONTEXT (adapter) |
+| SPOT / PERP RVOL | is volume unusual against the **same UTC slot** on prior days? | IMPULSE |
+| RELATIVE | is spot or perp unusually active relative to the other? | IMPULSE |
+| PERP / SPOT DELTA | estimated net up-bar vs down-bar volume inside the bar | ESTIMATED |
+| ETF 5D | is five-day US spot ETF flow in or out, and how unusually? | CONTEXT (adapter) |
+| SOPR | are coins moving at a profit or a loss versus their last move? | CONTEXT |
+
+### REGIME / IMPULSE / CONTEXT
 
 Not every measurement deserves the same treatment. A stability audit
 ([`audit/smoothing-audit.mjs`](./audit/smoothing-audit.mjs)) sorted them, using
 gates taken from the requirements — label run ≥ 3 bars, median detection delay
-≤ 1 bar with P90 ≤ 2, ≥ 90% retention of events at and above the measure's own
-entry threshold:
+≤ 1 bar, ≥ 90% retention of events at and above the measure's own entry
+threshold:
 
 | shape | measures | behaviour |
 |---|---|---|
-| **REGIME** | Trend, OI 24H | persistent state with hysteresis; appears in WHAT CHANGED |
-| **IMPULSE** | OI 4H, Premium, Participation, Spot RVOL, Perp RVOL | this bar only; no persistent state; appears in ANOMALIES but never as a regime transition |
-| **CONTEXT** | Funding, ETF flow, SOPR | slow external feeds |
+| **REGIME** | Trend, OI 24H | persistent state with hysteresis; appears in WHAT CHANGED and RECENT EVENTS as a transition |
+| **IMPULSE** | OI 4H, Premium, Participation, Spot RVOL, Perp RVOL | this bar only; no persistent state; appears in ANOMALIES and as a one-shot event, never as a regime transition |
+| **CONTEXT** | Funding, ETF flow, SOPR, liquidations | slow or external feeds |
 
-**OI 24H uses EMA(2)** on its z-score — the only candidate that cleared every
-gate (label run 2 → 3 bars, 100% retention at 1.5σ/2.0σ/2.5σ, median delay 0).
-EMA(3) and EMA(4) pushed P90 delay to 3–4 bars for no further gain.
+**OI 24H uses EMA(2)** on its z before the ladder — the only candidate that
+cleared every gate (label run 2 → 3 bars, 100% retention at 1.5σ/2.0σ/2.5σ,
+median delay 0). EMA(3) and EMA(4) pushed P90 delay to 3–4 bars for no gain.
 
-**Trend uses no smoothing.** After hysteresis it already holds a median of 9
-bars and transitions about once every 78. Smoothing would buy latency for
-nothing.
+**The other four could not be rescued.** Every candidate either left the label
+flickering at a 1–2 bar median or destroyed the extremes the measure exists to
+report — OI 4H lost half its 1.5σ events at EMA(3) with peak attenuation of
+0.51; Premium lost 46% of its 2σ events at EMA(2). So they report instantaneous
+spikes instead: zero latency, no state to flicker, nothing claimed to persist.
 
-**The other five could not be rescued**, and the reason matters: every candidate
-either left the label flickering at a 1–2 bar median or destroyed the very
-extremes the measure exists to report. OI 4H lost half its 1.5σ events at
-EMA(3), with peak attenuation of 0.51. Premium lost 46% of its 2σ events at
-EMA(2). So they report instantaneous spikes instead — zero latency, no state to
-flicker, and nothing claimed to persist.
+**De-seasonalisation was tried and rejected.** See §7.
 
-**Raw z is always displayed**, whatever the shape. A smoothed value that hid the
-latest move would defeat the point of a monitor.
+### Hysteresis
 
----
+A Schmitt trigger on `|z|`: entering costs more than staying. A readability
+device, **not** claimed to improve any decision. Verified in
+[`audit/hysteresis-verify.mjs`](./audit/hysteresis-verify.mjs), which first
+proves its JavaScript model reproduces the compiled Pine on all 13,164 bars:
 
-## Hysteresis
-
-A Schmitt trigger: entering requires more evidence than staying. It is a
-readability device and is **not** claimed to improve any decision.
-
-Verified in [`audit/hysteresis-verify.mjs`](./audit/hysteresis-verify.mjs),
-which first proves the JavaScript model reproduces the compiled Pine on all
-13,164 bars — otherwise the numbers would describe a different state machine:
-
-| measure | transitions | median run | retention | detection delay |
+| measure | transitions | median label run | retention | detection delay |
 |---|---|---|---|---|
-| OI 24H | 2122 → **1889** | 2 → **3** | 100% | **0 bars** |
-| Trend | 223 → **169** | 5 → **9** | 99% | **0 bars** |
+| OI 24H | 2016 → **1784** | 2 → **3** | 100% | **0 bars** |
+| TREND | 223 → **169** | 5 → **9** | 99% | **0 bars** |
 
-Because the entry threshold is unchanged, a first crossing is reported on the
-same bar. The obvious alternative — requiring two consecutive bars — reaches
-similar stability only by **losing 19–7% of events and delaying every entry by
-up to 8 hours**.
+The obvious alternative — requiring two consecutive bars — reaches similar
+stability only by **losing 20% of events and delaying every entry by up to eight
+hours**.
 
-Effect on the panel: WHAT CHANGED now fires on **15.4%** of bars, down from
-64.5% before the REGIME/IMPULSE split.
+In v3 the ladder reads magnitude only, so a raw sign flip no longer resets it.
+The direction word has no hysteresis of its own, by design. The price of that
+was measured: **OI 24H's direction flips on 30 of 3,010 consecutive engaged bars
+(1.00%)** — small enough that the label does not rattle.
 
 ---
 
-## Dashboard
+## 5. Market Mechanics replaces v2's alignment count
+
+v2 printed `STRONGLY ALIGNED 5/5` when price, OI, funding, premium and perp RVOL
+all moved the same way over 24h. That number had no referent: those are five
+different quantities with five different economics, and "agreement" between them
+is not one thing.
+
+v3 shows the one pairing whose joint reading has a definition rather than a
+vote — price direction against position direction over the same 24 hours:
 
 ```
-WHAT CHANGED          regime transitions only, vs the last confirmed bar
-ANOMALIES: N          ranked by |z|, impulses marked *
+PRICE UP   + POSITION BUILD          PRICE UP   + POSITION REDUCTION
+PRICE DOWN + POSITION BUILD          PRICE DOWN + POSITION REDUCTION
+```
 
-REGIME    TREND · VOLATILITY · OI 24H          raw z + smoothed z + state
-IMPULSE   OI 4H · PREMIUM · PARTICIPATION      raw z + smoothed z + this bar
-          ALIGNMENT
-CONTEXT   FUNDING · ETF 5D · SOPR
+with funding, premium and perp RVOL attached as description. All four states
+occur in the test window and both axes are asserted to carry the sign of their
+own raw 24h change (check 14).
+
+It is **not** converted into bullish or bearish. It is a description of what
+price and positioning did, together.
+
+---
+
+## 6. Data health
+
+Every feed reports its own freshness, and anything below `1 BAR OLD` is treated
+as no data: no reading, no anomaly, no event, no alert.
+
+| status | meaning |
+|---|---|
+| `FRESH` | current |
+| `1 BAR OLD` / `1D OLD` | one period behind — normal for a daily feed |
+| `STALE` | present but too old to describe this bar; readings suppressed |
+| `MISCONFIGURED` | adapter enabled but still pointed at the chart's own close |
+| `UNAVAILABLE` | nothing there, or the adapter is off |
+
+Freshness for the exchange feeds is measured against the **bar timestamp the
+symbol actually returned**, not against whether the number changed —
+`request.security()` carries the last value forward when a symbol has no bar,
+which is indistinguishable from a fresh repeat unless you compare times.
+
+Policy, all in 4H bars:
+
+| feed | FRESH | OLD | STALE | why |
+|---|---|---|---|---|
+| reference, spot, OI | 0 bars behind | 1 | > 1 | exchange feeds on the chart's own timeframe; two bars of lag is an outage |
+| daily 200MA, SOPR | ≤ 2 days | ≤ 3 | > 3 | one day behind **by construction** — the non-repainting idiom requests the previous completed daily bar |
+| funding adapter | unchanged 0 bars | ≥ 1 | > 6 (24h) | settles every 8h = 2 bars |
+| ETF adapter | unchanged 0 bars | ≥ 1 | > 30 (5d) | daily and business-day only; a 3-day weekend is normal |
+| liquidation adapters | unchanged 0 bars | ≥ 1 | > 6 (24h) | should move most bars |
+
+An adapter that has not yet accumulated 50 bars of history reads
+`MISCONFIGURED`, not `FRESH` — it cannot yet be distinguished from the chart's
+own close, and an unproven adapter must not produce readings.
+
+---
+
+## 7. OI 4H de-seasonalization: tested, rejected
+
+Open interest on a 24/7 venue has a time-of-day shape, so a rolling 180-bar
+z-score pools slots that are not the same population. The candidate fix
+compares each bar only with the **same UTC slot** on previous days.
+
+[`audit/oi4h-deseasonalization.mjs`](./audit/oi4h-deseasonalization.mjs)
+pre-registered three variants (rolling, same-slot 30d, same-slot 60d), six
+signal-quality metrics, and a four-part adoption rule, all before the first run.
+No forward return, MAE, MFE or Sharpe appears anywhere in the file.
+
+There **is** a slot effect — per-slot standard deviation varies 1.39× between
+the widest and narrowest slot. It does not help:
+
+| variant | fires | false spikes | retention 1%/0.5%/0.1% | med delay | peak \|z\| | flip rate |
+|---|---|---|---|---|---|---|
+| **A** rolling 180 | 20.0% | **0.1%** (2) | 94% / 97% / 92% | 0 | 5.57 | 28.1% |
+| B30 same-slot 30d | 25.2% | 8.6% (283) | 98% / 98% / 92% | 0 | 8.99 | 34.6% |
+| B60 same-slot 60d | 23.1% | 5.1% (153) | 98% / 98% / 92% | 0 | 7.61 | 31.7% |
+
+A "false spike" is a fired bar whose raw |4H OI change| is **below the median**
+of the whole sample — the normaliser manufactured an unusual reading out of a
+smaller-than-typical move. A 30-day same-slot window contains ~30 observations,
+so its standard deviation is small and ordinary moves score high: false spikes
+rise from 2 to 283. The small retention gain (+4pp at the 1% tier) does not pay
+for it.
+
+Both variants **REJECTED**. OI 4H keeps the rolling z-score and stays an
+IMPULSE. Ground truth was deliberately defined on the raw percentage change, not
+on variant A's own z-score, so A was not handed the win by construction.
+
+---
+
+## 8. Dashboard
+
+```
+BTC 4H MARKET RADAR
+
+RECENT EVENTS                     last 5 confirmed events, with age
+  now   OI 24H extreme expansion 99.4p (+4.71%)
+  4h    OI 24H unusual expansion 98.3p (+3.32%)
+  8h    Short liquidation spike 98.9p
+
+WHAT CHANGED                      NEW / NORMALIZED / CHANGED, vs the last close
+CURRENT ANOMALIES: N              ranked by percentile extremeness, impulses *
+
+MARKET MECHANICS                  price 24H × OI 24H, plus description
+TREND / VOLATILITY                persistent regime
+DERIVATIVES                       OI 24H · OI 4H · funding · premium · liq
+PARTICIPATION                     spot RVOL · perp RVOL · relative
+FLOW                              estimated lower-TF delta
+SLOW CONTEXT                      ETF · SOPR
+DATA HEALTH                       every feed's freshness
 
 EVIDENCE: DESCRIPTIVE   ACTION: CONTEXT ONLY
 ```
 
-### Cross-data alignment
+**RECENT EVENTS** holds the last five confirmed events with their age, so a
+glance answers "what did I miss". Written only on a confirmed 4H close, and
+never twice in a row for the same line.
 
-Counts how many of price, OI, funding, premium and perp RVOL moved the same
-direction over 24h. `STRONGLY ALIGNED 5/5` means the measurements agree with
-each other — **not** that agreement predicts anything. `MIXED 3/5` means they
-conflict, which is a reason to be careful reading them, nothing more.
+**WHAT CHANGED** covers the last bar only, grouped:
+
+```
+NEW:          OI 24H entered unusual expansion
+NORMALIZED:   Premium returned from extreme
+CHANGED:      ETF unusual inflow → unusual outflow
+```
+
+REGIME and CONTEXT transitions only. An impulse has no previous state to have
+changed from, so listing one here would report noise as a transition. Fires on
+**14.6%** of bars.
+
+Worst case — 9 anomalies, 5 events, all four adapters live — uses **51 of 64**
+allocated table rows, and every cell write is bounds-guarded.
 
 ### Evidence levels
 
@@ -136,10 +352,10 @@ conflict, which is a reason to be careful reading them, nothing more.
 
 ---
 
-## Setup
+## 9. Setup
 
-Paste [`main.pine`](./main.pine) into the Pine Editor and add to chart. Intraday
-timeframe required; designed for 4H.
+Paste [`main.pine`](./main.pine) into the Pine Editor and add to chart. **4H
+timeframe required** — the script halts on anything else.
 
 **The first 200 days show no trend regime** — the daily 200MA has not warmed up.
 That is correct, not a bug.
@@ -159,7 +375,6 @@ things at runtime:
 1. **What the feed calls itself.** `syminfo.currency` read from the OI symbol's
    own context. `NONE` means the values are not currency amounts, which is what
    a base-unit or contract feed looks like. `USD`/`USDT`/`USDC` means notional.
-   The label is shown in the OI 24H row.
 2. **Magnitude.** Base-unit BTC OI is ~10⁵; USD notional is ~10¹⁰.
 
 Either check failing disables the OI readings and puts a warning on the chart.
@@ -175,34 +390,45 @@ then point the matching input at its plot.
 Each adapter has an explicit **enable toggle**, because an unwired
 `input.source()` returns exactly its default with no `na` and no sentinel —
 there is no way to tell "the user selected close" from "the user selected
-nothing". The script also warns if an adapter is enabled while its source is
-still `close`, which would feed price into a funding z-score.
+nothing".
 
 Open interest needs no adapter: it comes straight from the `_OI` service symbol.
 
-**Unconfirmed:** whether TradingView's own built-in Fundamentals → Derivatives
-studies expose selectable plots. The docs confirm a source input can receive
-*"the values plotted by other scripts"* but also warn that *"not all indicators
-can be calculated based on another indicator"*, and explicitly exclude
-strategies. If built-ins are not selectable, these three adapters need a
-community script that republishes the data.
+**Unconfirmed:** whether TradingView's own Fundamentals → Derivatives studies
+expose selectable plots. That is item D3 on the manual checklist.
+
+### Footprint — separate file, optional, Premium+
+
+[`footprint-live.pine`](./footprint-live.pine) is a **separate indicator** and
+deliberately not part of the Radar. `request.footprint()` requires a Premium,
+Premium+ or Ultimate plan, PineTS has no implementation of it, and TradingView
+documents footprint data as **repainting by design** — "in real time the chart
+may use one intrabar source (e.g. 1T) while the same bar is later recalculated
+using a less granular interval (e.g. 1S)".
+
+So it is marked **LIVE / DESCRIPTIVE ONLY — NOT HISTORICAL EVIDENCE**, has no
+alerts, and never enters the prospective event log. Putting the call inside
+`main.pine` would have made the Radar unusable below Premium and taken down the
+entire offline test suite in exchange for one feature that cannot be verified.
 
 ---
 
-## Alerts
+## 10. Alerts
 
-OI 24H regime change · funding crowded long/short · premium spike · participation
-spike · OI 4H spike · large OI reduction after an extreme expansion · ETF flow
-regime change · SOPR crossing 1 · slow trend regime change
+OI 24H regime change and return to normal · funding regime change · ETF regime
+change and direction change · slow trend transition · SOPR crossing 1 · OI 4H
+spike · premium spike · participation spike · long liquidation spike · short
+liquidation spike · any feed becoming STALE · any feed becoming available again
 
-All fire on **confirmed 4H bar close only**. Impulse alerts are suppressed while
-the previous bar was already spiking, so a multi-bar excursion reports once.
+All fire on **confirmed 4H bar close only**, all with
+`alert.freq_once_per_bar_close`, and impulse alerts are suppressed while the
+previous bar was already spiking so a multi-bar excursion reports once.
 
 No `BUY`, `SELL`, `REDUCE` or `DO NOT CHASE`. None of those survived the audit.
 
 ---
 
-## Testing
+## 11. Testing
 
 The dataset is not in the repository — it is 93 MB of Binance history. Build it
 once first; everything else reads from the cache it writes.
@@ -212,73 +438,129 @@ cd ../btc-4h-regime-engine/data && node fetch.mjs    # ~2,200 daily OI files, on
 cd ../../btc-4h-market-intelligence
 
 npm install
-npm test                      # 1500 bars
-node tests.mjs 6000
+npm test                             # 21 checks, 1500 bars
+node tests.mjs 6000                  # same suite, longer window
 
-cd audit
-node extract-states.mjs       # run the frozen indicator over the full dataset
-node hysteresis-verify.mjs    # flicker and latency
-node smoothing-audit.mjs      # REGIME vs IMPULSE decision
-node event-log.mjs            # prospective log, from the freeze forward
+node audit/extract-states.mjs        # run the frozen indicator over 13,164 bars
+node audit/hysteresis-verify.mjs     # flicker and latency
+node audit/smoothing-audit.mjs       # REGIME vs IMPULSE decision
+node audit/oi4h-deseasonalization.mjs   # same-slot normalisation, rejected
+node audit/event-log.mjs             # prospective log, from the freeze forward
 ```
 
-`extract-states.mjs` writes `states.json` (5.8 MB), which is generated and not
-committed. `event-log.json` **is** committed: it accumulates, and re-running
-must never rebuild what it already recorded.
+### OFFLINE VERIFIED
 
-`decision-utility.mjs` audits the v1 state machine and refuses to run against a
-v2 `states.json` rather than silently reporting zero episodes. Its findings live
-in [`AUDIT.md`](./audit/AUDIT.md) and are what deleted the Action layer.
+| # | Check | What it proves |
+|---|---|---|
+| 0 | runs | transpiles and executes against genuine multi-symbol data |
+| 1 | **semantic invariants** | every direction word follows the raw value — 0 violations across OI 24H, OI 4H, premium, funding, ETF and liquidation balance |
+| 2 | trend / SOPR signs | the state sign equals the raw deviation's sign on every engaged bar |
+| 3 | participation naming | RELATIVE SURGE follows its own z; `SPOT DOMINANT`/`PERP DOMINANT` are gone from the source |
+| 4 | **percentile correctness** | in [0,100] across 7 series, and ranks correctly against its own window on 103 checked extremes |
+| 5 | percentrank fixture | a strictly rising series ranks 100, a falling one ranks at the floor |
+| 6 | **chart-symbol independence** | all 22 radar series bit-identical on a BTC chart and a non-BTC chart |
+| 7 | **exact 4H** | the predicate is 1 at 240 and 0 at 60, and `runtime.error` is wired to it |
+| 8 | **no repaint** | truncating and re-running leaves every past bar identical, including hysteresis levels, direction codes, feed statuses and the event counter |
+| 9 | **units guard** | USD-notional OI rejected by magnitude *and* by declared currency, tested independently |
+| 10 | missing feeds | SOPR and all four disabled adapters produce no value, no level, no anomaly |
+| 11 | **liquidation adapters** | both sides end-to-end below `input.source()`; spikes fire on the upper tail only; balance in [−1,1] with the correct sign |
+| 12 | **stale / misconfigured** | a frozen feed goes STALE within 6 bars and stops producing readings; an enabled-but-unwired adapter reads MISCONFIGURED, never STALE or UNAVAILABLE |
+| 13 | anomaly count | the headline number equals the engaged measurements on every bar; the ranking value stays in [50,100] |
+| 14 | **market mechanics** | both axes carry the sign of their own raw 24h change; all four states occur |
+| 15 | **recent events** | buffer never exceeds 5, equals min(5, accepted pushes), never decreases, no adjacent duplicates |
+| 16 | alert structure | one `alert()` call site, inside `fire()`; all 20 `fire()` calls inside the confirmed block; no message repeats on consecutive bars |
+| 17 | **table capacity** | worst case uses 51 of 64 rows; all 13 sections render in priority order with no prescriptive label |
+| 18 | z-scores | rolling z-scores are actually standardised |
+| 19 | **premium definition** | perp premium correlates with realised funding at **r = 0.63** (0.75 on the 24h mean) — as it must, since Binance derives funding from the premium index |
+| 20 | **cohort integrity** | changing any of {schema, freeze, indicator hash, config hash, threshold version} produces a different cohort and refuses the merge; all four routing branches covered |
 
-| Check | What it proves |
-|---|---|
-| runs | transpiles and executes against genuine multi-symbol data |
-| state ranges | no state ever leaves its declared vocabulary |
-| **no repaint** | truncating and re-running leaves every past bar identical, hysteresis states included |
-| **units guard** | USD-notional OI is rejected by magnitude *and* by declared currency, tested independently |
-| absent feed | SOPR missing → no value, no state, no anomaly |
-| z-scores | rolling z-scores are actually standardised |
-| **premium definition** | perp premium correlates with realised funding at **r = 0.63** (0.75 on the 24h mean) — as it must, since Binance derives funding from the premium index. This separates "measuring basis" from "measuring noise" |
-| anomaly count | the headline number equals the engaged measurements, on every bar |
-| alignment bounds | the alignment count is arithmetically possible on every bar |
-| dashboard | all sections render, and no prescriptive or predictive text survives |
-
-The suite also asserts the harness's spot and perp series are genuinely
+The suite also asserts the harness's spot and reference series are genuinely
 different. PineTS strips exchange prefixes, so a chart symbol of `BTCUSDT`
 collides with the stripped form of `BINANCE:BTCUSDT`; spot then silently
-resolves to the perp, premium becomes identically zero, and everything passes
-while testing nothing. That trap was hit once during development.
+resolves to the reference, premium becomes identically zero, and everything
+passes while testing nothing. That trap was hit once during development.
 
-### Prospective evidence
+### TRADINGVIEW MANUAL VALIDATION REQUIRED
+
+Not provable offline, and not claimed:
+
+- real symbol spelling and history depth
+- what Binance's `_OI` symbol actually reports on TradingView
+- `request.security_lower_tf()` — the local provider has no intrabar series, so
+  offline runs exercise the `no intrabar` branch only
+- whether the `input.source()` **picker** can see another indicator's plot
+- visual layout and alert delivery
+- everything in `footprint-live.pine`
+
+The checklist is [`TRADINGVIEW-VALIDATION.md`](./TRADINGVIEW-VALIDATION.md),
+41 items, each with an expected result.
+
+---
+
+## 12. Prospective evidence, and how it is kept clean
 
 The historical window has been examined too many times to serve as
 out-of-sample. [`audit/event-log.mjs`](./audit/event-log.mjs) records every
-regime transition and impulse spike **from the v2 freeze forward**, with the
-full feature vector and forward outcomes filled in as bars arrive.
+regime transition and impulse spike **from the freeze forward**, with the
+complete fact set at that instant — 18 raw values, 22 percentiles and z-scores,
+9 freshness codes and 23 state codes — plus forward outcomes filled in as bars
+arrive.
 
 Those outcomes are not evidence today. Reading them before pre-registering a
 hypothesis is exactly how the historical window stopped being usable.
 
-### Limitations
+### Cohort rule
+
+A log belongs to exactly one **cohort**, identified by five things:
+
+```
+schema version · freeze date · sha256(main.pine) · sha256(all input defaults) · THRESHOLD-VERSION
+```
+
+Change any one of them and it is a different experiment. `event-log.mjs`
+**exits 1** rather than write into a log stamped with a different cohort, and
+prints which field moved. `--new-cohort` starts a separate file
+(`event-log-v3-<id>.json`) instead of contaminating the old one.
+
+The failure this prevents is specific: a new version re-scanning the bars after
+an old freeze with new definitions, merging those rows into the old file, and
+producing something that *reads* as accumulated out-of-sample evidence while
+being a fresh in-sample fit. `event-log-v2-legacy.json` is the v2 cohort's file,
+kept and never merged — it recorded zero events before v3 replaced it.
+
+---
+
+## 13. Limitations
 
 - **PineTS is not TradingView.** Two rewrites are applied for the offline run
   only: PineTS re-runs the whole script inside `request.security()` (TradingView
   evaluates just the expression), and its `na()` cannot handle an `na` array.
-  Both are documented in `tests.mjs`.
-- Not verified offline: real symbol spelling and history depth, the
-  lower-timeframe flow proxy, `input.source()` adapters, visual layout, alerts.
+  Both are documented in `tests.mjs`. A third quirk is worked around *in* the
+  indicator: PineTS drops a bare `time` inside a `request.security` tuple, so
+  the freshness checks are written `int(time)` — a no-op cast on TradingView.
+- **The four adapters' wiring is not tested offline.** The test suite substitutes
+  a deterministic series at the `input.source()` declaration, which exercises
+  everything downstream of the value but not the picker itself.
 - **The flow proxy has a hard history ceiling.** `request.security_lower_tf()` is
   capped at 100,000 intrabars on Basic through Premium (125K Expert, 200K
   Ultimate). At 5-minute intrabars on a 4H chart that is ~2,000 bars, about 11
   months. Older bars return an empty array.
-- Daily feeds are always **one full day behind** by construction — the
-  non-repainting idiom requests the previous completed daily value. Glassnode's
-  own publication lag stacks on top.
+- **The flow proxy is an estimate.** A lower-timeframe bar is classified buy-side
+  if it closes up. Wrong on individual bars, roughly right in aggregate. Real
+  aggressor data needs footprint, which repaints by design and is confined to
+  `footprint-live.pine`.
+- Daily feeds are always **one full day behind** by construction. Glassnode's own
+  publication lag stacks on top.
 - Binance OI history has 12 bars at exactly zero between 2022 and 2025. The
   script rejects them; a naive `oi/oi[1]-1` would read −100% and poison the
   z-score window.
-- The flow proxy classifies a lower-timeframe bar as buy-side if it closes up.
-  Wrong on individual bars, roughly right in aggregate. Real aggressor data needs
-  footprint, which repaints by design and is barred from anything historical.
+- **The direction axis has no hysteresis.** Measured, not assumed: OI 24H's
+  direction flips on 1.00% of consecutive engaged bars. Small, but not zero.
 - Spot and perp RVOL were classified IMPULSE **by analogy** with the
   participation ratio they compose, not separately audited.
+- **The intensity ladder is σ-driven while the displayed abnormality is a
+  percentile.** They agree in almost every case but are not the same statistic;
+  §2 explains why the ladder was left in σ.
+- **Nothing here is SUPPORTED or VALIDATED.** Every state is DESCRIPTIVE. The
+  radar organises data correctly; it makes no claim that any reading predicts
+  anything, and the research record behind it is a list of things that did not.

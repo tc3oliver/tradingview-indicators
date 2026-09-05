@@ -1,4 +1,4 @@
-// Offline verification for BTC 4H Market Radar (v2).
+// Offline verification for BTC 4H Market Radar (v3).
 //
 // PineTS runs the real main.pine on Node, but its bundled Binance provider only
 // ever calls /klines — it cannot fetch BTCUSDT.P, _OI, or any Glassnode symbol.
@@ -10,39 +10,57 @@
 // recorded Binance data. Cross-symbol request.security then resolves offline and
 // honours lookahead and the [1] offset.
 //
-// Verifiable here: no-repaint, the OI units guard, DATA UNAVAILABLE propagation,
-// z-score standardisation, anomaly-count consistency, alignment bounds, the
-// definitional soundness of the premium measure, and the dashboard layout.
-// Not verifiable here: real TradingView symbol spelling and history depth, the
-// lower-timeframe flow proxy, input.source() adapters, layout, alert firing.
-// Hysteresis stability has its own script: audit/hysteresis-verify.mjs
+// WHAT IS PROVEN HERE (OFFLINE VERIFIED)
+//   chart-symbol independence, the 4H predicate, no-repaint including all held
+//   state, the OI units guard on both paths, every raw-direction semantic
+//   invariant, percentile range and order-correctness, z standardisation, the
+//   liquidation adapters end-to-end below input.source(), stale and
+//   misconfigured adapter handling, missing-feed suppression, recent-event
+//   dedup and length, market-mechanics arithmetic, table row capacity, and
+//   alert gating to confirmed bars.
+//
+// WHAT IS NOT (TRADINGVIEW MANUAL VALIDATION REQUIRED — see
+// TRADINGVIEW-VALIDATION.md)
+//   real symbol spelling and history depth, request.security_lower_tf, the
+//   input.source() *picker* itself, visual layout, and request.footprint()
+//   (separate file, footprint-live.pine — PineTS has no implementation of it).
 
 import { PineTS, BaseProvider } from 'pinets';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { cohortId, cohortMatches, resolveLogTarget } from './audit/cohort.mjs';
 
 const RAW = readFileSync(new URL('./main.pine', import.meta.url), 'utf8');
 const HASH = createHash('sha256').update(RAW).digest('hex');
 
-// Two PineTS-only rewrites. Both are limitations of the offline runtime, not of
-// the indicator:
+// Two PineTS-only rewrites, applied to EVERY run. Both are limitations of the
+// offline runtime, not of the indicator:
 // (a) PineTS implements request.security() by re-running the ENTIRE script in a
 //     secondary context at the requested timeframe; TradingView evaluates only
-//     the expression. The intraday guard — correct on TradingView — therefore
-//     fires from inside the "1D" request.
+//     the expression. The 4H guard — correct on TradingView — would therefore
+//     fire from inside the "1D" request. Only the runtime.error line is
+//     removed; `tfOK` itself stays and is asserted below.
 // (b) PineTS's na() on an array still dereferences .size, so the na-guard around
 //     request.security_lower_tf cannot execute. The provider has no 5m series
 //     anyway, so those calls become empty arrays, exercising the flowOK == false
 //     path. The flow proxy itself stays unverified until TradingView.
-let SRC = RAW;
-const rewrite = (re, to, name) => {
-  const next = SRC.replace(re, to);
-  if (next === SRC) { console.error(`rewrite "${name}" no longer matches main.pine — fix tests.mjs`); process.exit(1); }
-  SRC = next;
+const rewrite = (src, re, to, name) => {
+  const next = src.replace(re, to);
+  if (next === src) { console.error(`rewrite "${name}" no longer matches main.pine — fix tests.mjs`); process.exit(1); }
+  return next;
 };
-rewrite(/if not timeframe\.isintraday and barstate\.islast\n\s+runtime\.error\([^\n]*\n/, '', 'intraday guard');
-rewrite(/\[perpUp, perpDn\] = request\.security_lower_tf\([^\n]*\n\[spotUp, spotDn\] = request\.security_lower_tf\([^\n]*\n/,
+let BASE = RAW;
+BASE = rewrite(BASE, /if not tfOK\n\s+runtime\.error\([^\n]*\n/, '', 'tf guard');
+BASE = rewrite(BASE, /\[perpUp, perpDn\] = request\.security_lower_tf\([^\n]*\n\[spotUp, spotDn\] = request\.security_lower_tf\([^\n]*\n/,
   'perpUp = array.new<float>(0)\nperpDn = array.new<float>(0)\nspotUp = array.new<float>(0)\nspotDn = array.new<float>(0)\n', 'lower-tf flow');
+
+// Adapter rewrites. input.source() cannot be wired from Node — there is no
+// second indicator to point at — so the four adapter sources are replaced with
+// deterministic expressions at exactly the point where the user's plot would
+// arrive. Everything downstream (z, percentile, ladder, direction, freshness,
+// labels, anomalies, events, alerts) is the real code path.
+const enable = (src, label) => rewrite(src, new RegExp(`input\\.bool\\(false, "Enable ${label} adapter"`), `input.bool(true, "Enable ${label} adapter"`, `enable ${label}`);
+const wire = (src, label, expr) => rewrite(src, new RegExp(`\\w+\\s*= input\\.source\\(close, "  ${label}"[^\\n]*\\n`), `${expr}\n`, `wire ${label}`);
 
 const all = JSON.parse(readFileSync(new URL('../btc-4h-regime-engine/data/cache/btc-4h.json', import.meta.url), 'utf8'));
 const N = +(process.argv[2] ?? 1500);
@@ -57,15 +75,22 @@ const flat = (t, x) => bar(t, x, x, x, x, 0);
 
 // The chart runs on BTCUSDT.P so perp and spot are genuinely DIFFERENT series.
 // A chart symbol of "BTCUSDT" collides with the stripped form of
-// "BINANCE:BTCUSDT": spot silently resolves to the perp, premium becomes
+// "BINANCE:BTCUSDT": spot silently resolves to the reference, premium becomes
 // identically zero, and the suite passes while testing nothing. That trap was
 // hit once during development; the harness guard below keeps it shut.
 const CHART = 'BTCUSDT.P';
+// A deliberately non-BTC chart series for the independence test: same bar
+// times, completely different prices and volumes.
+const ALT = 'ETHUSDT';
+
 function buildSeries(src, { usdOI = false } = {}) {
   return {
     'BTCUSDT.P': src.map((r) => bar(r.t, r.open, r.high, r.low, r.close, r.volume)),
     'BTCUSDT': src.map((r) => bar(r.t, r.spotOpen, r.spotHigh, r.spotLow, r.spotClose, r.spotVolume)),
     'BTCUSDT.P_OI': src.map((r) => flat(r.t, usdOI ? r.oiValue : r.oi)),
+    // Roughly ETH-shaped: ~1/30 of BTC, inverted intrabar shape, different
+    // volume scale. Nothing about it may reach a Radar reading.
+    [ALT]: src.map((r, i) => bar(r.t, r.open / 31 + i, r.high / 29 + i, r.low / 33 + i, r.close / 30 + i, r.volume * 7 + 11)),
     // GLASSNODE:BTC_SOPR deliberately absent — exercises DATA UNAVAILABLE.
   };
 }
@@ -74,7 +99,7 @@ function makeProvider(series, opts = {}) {
   const lookup = (id) => series[String(id).split(':').pop()];
   return new (class extends BaseProvider {
     constructor() { super({ requiresApiKey: false, providerName: 'Local' }); }
-    getSupportedTimeframes() { return new Set(['240']); }
+    getSupportedTimeframes() { return new Set(['240', '60']); }
     async _getMarketDataNative(id) { return lookup(id) ?? []; }
     async getSymbolInfo(id) {
       // A base-unit OI feed is not a currency amount, so TradingView reports
@@ -86,7 +111,11 @@ function makeProvider(series, opts = {}) {
   })();
 }
 
-const run = async (src, opts = {}) => new PineTS(makeProvider(buildSeries(src, opts), opts), CHART, '240', src.length).run(SRC);
+const run = async (src, opts = {}) => {
+  const p = new PineTS(makeProvider(buildSeries(src, opts), opts), opts.chart ?? CHART, opts.tf ?? '240', src.length);
+  if (opts.alertMode) p.setAlertMode(opts.alertMode);
+  return p.run(opts.source ?? BASE);
+};
 
 const ser = (ctx, key, len) => {
   const p = ctx.plots?.[key];
@@ -96,155 +125,541 @@ const ser = (ctx, key, len) => {
 const eq = (a, b) => a === b || (Number.isNaN(a) && Number.isNaN(b));
 const mean = (a) => a.reduce((s, x) => s + x, 0) / a.length;
 const sd = (a) => { const m = mean(a); return Math.sqrt(mean(a.map((x) => (x - m) ** 2))); };
+const fin = (a) => a.filter(Number.isFinite);
+
+// Pack decoders. Order must match the plot expressions at the foot of main.pine.
+const unpack = (v, base, n) => {
+  if (!Number.isFinite(v)) return new Array(n).fill(NaN);
+  const out = []; let x = Math.round(v);
+  for (let i = 0; i < n; i++) { out.push(x % base); x = Math.floor(x / base); }
+  return out;
+};
+const STAT_KEYS = ['ref', 'spot', 'oi', 'daily', 'sopr', 'fd', 'et', 'lL', 'lS'];
+const DIR_KEYS = ['oi24', 'oi4', 'pm', 'fd', 'et', 'pt', 'rs', 'rp', 'lqB', 'mechPx', 'mechOi'];
+const LVL_KEYS = ['oi24', 'oi4', 'pm', 'fd', 'et', 'pt', 'rs', 'rp', 'lqL', 'lqS'];
+const decode = (ctx) => {
+  const sp = ser(ctx, 't_statPack'), dp = ser(ctx, 't_dirPack'), lp = ser(ctx, 't_lvlPack');
+  const n = sp.length;
+  const out = { stat: {}, dir: {}, lvl: {} };
+  for (const k of STAT_KEYS) out.stat[k] = new Array(n);
+  for (const k of DIR_KEYS) out.dir[k] = new Array(n);
+  for (const k of LVL_KEYS) out.lvl[k] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const s = unpack(sp[i], 5, 9), d = unpack(dp[i], 3, 11), l = unpack(lp[i], 3, 10);
+    STAT_KEYS.forEach((k, j) => { out.stat[k][i] = s[j]; });
+    DIR_KEYS.forEach((k, j) => { out.dir[k][i] = Number.isNaN(d[j]) ? NaN : d[j] - 1; });
+    LVL_KEYS.forEach((k, j) => { out.lvl[k][i] = l[j]; });
+  }
+  return out;
+};
+
+const readTable = (ctx) => {
+  const t = ctx.plots?.__tables__?.data?.at(-1)?.value?.[0];
+  if (!t?.cells) return [];
+  return t.cells.map((row) => row.map((c) => c?.text ?? '').filter((x, i) => i === 0 || x !== '').join(' | '));
+};
 
 const fails = [];
 const check = (ok, msg) => { if (!ok) fails.push(msg); return ok; };
-const line = (n, ok, txt) => console.log(`${n}. ${ok ? '✅' : '❌'} ${txt}`);
+const line = (n, ok, txt) => console.log(`${String(n).padStart(2)}. ${ok ? '✅' : '❌'} ${txt}`);
+const note = (txt) => console.log(`      ${txt}`);
 
-console.log('='.repeat(94));
-console.log('BTC 4H Market Radar — offline verification');
+console.log('='.repeat(98));
+console.log('BTC 4H Market Radar v3 — offline verification');
 console.log(`${rows.length} bars  ${new Date(rows[0].t).toISOString().slice(0, 10)} -> ${new Date(rows.at(-1).t).toISOString().slice(0, 10)}   hash ${HASH.slice(0, 12)}`);
-console.log('='.repeat(94) + '\n');
+console.log('='.repeat(98) + '\n');
 
 let ctx;
 try {
   ctx = await run(rows);
 } catch (e) {
-  console.log(`0. ❌ script failed to run: ${e.message}`);
-  console.log(e.stack?.split('\n').slice(0, 6).join('\n'));
+  console.log(' 0. ❌ script failed to run: ' + e.message);
+  console.log((e.stack ?? '').split('\n').slice(0, 6).join('\n'));
   process.exit(1);
 }
 line(0, true, 'main.pine transpiles and runs against multi-symbol local data');
 
-// Harness guard: if spot and perp ever resolve to the same series, every
-// cross-symbol result below is vacuous.
+// Harness guard: if spot and the reference ever resolve to the same series,
+// every cross-symbol result below is vacuous.
 {
   const s = buildSeries(rows);
   if (s['BTCUSDT.P'].every((b, i) => b.close === s['BTCUSDT'][i].close)) {
-    console.log('   ❌ HARNESS BROKEN: spot and perp alias'); process.exit(1);
+    console.log('   ❌ HARNESS BROKEN: spot and reference alias'); process.exit(1);
+  }
+  if (s[ALT].every((b, i) => b.close === s['BTCUSDT.P'][i].close)) {
+    console.log('   ❌ HARNESS BROKEN: alt chart aliases the reference'); process.exit(1);
   }
 }
 
-// REGIME/CONTEXT hold a hysteresis state; IMPULSE fires from the raw z on the
-// bar itself. Both are three-valued except the OI 24H ladder.
-const THREE = ['t_trSt', 't_fdSt', 't_etSt', 't_spSt', 't_oi4Imp', 't_pmImp', 't_ptImp', 't_rsImp', 't_rpImp'];
-const FIVE = ['t_oi24St'];
-const STATES = [...FIVE, ...THREE];
-const ANOM_STATES = STATES.filter((k) => k !== 't_trSt');   // trend is a regime row, not an anomaly
-const S = Object.fromEntries(STATES.map((k) => [k, ser(ctx, k)]));
+const D = decode(ctx);
+const nb = rows.length;
 
-// ---------- 1. hysteresis states stay inside their declared ranges ----------
-let rangeBad = 0;
-for (const k of THREE) for (const v of S[k]) if (!Number.isNaN(v) && ![-1, 0, 1].includes(v)) rangeBad++;
-for (const k of FIVE) for (const v of S[k]) if (!Number.isNaN(v) && ![-2, -1, 0, 1, 2].includes(v)) rangeBad++;
-line(1, check(rangeBad === 0, `${rangeBad} state values outside their declared range`),
-  `every state stays in its declared range (${THREE.length} three-level, ${FIVE.length} five-level ladder)`);
+// ---- one run with every adapter live, reused by several checks below ----
+// input.source() is replaced at its own declaration, so the expressions may only
+// use identifiers that exist that early: chart builtins. That is faithful — on
+// TradingView an input.source() value also arrives from the chart pane. Only the
+// four adapters are affected; every Radar price feature still comes from the
+// reference symbol, which check 6 proves independently.
+const LIQL = 'extLiqL    = math.abs(close - close[1]) * volume';
+const LIQS = 'extLiqS    = math.abs(high - low) * volume * 0.7';
+const FUND = 'extFunding = (close - ta.sma(close, 20)) / ta.sma(close, 20) * 0.05';
+const ETF  = 'extEtf     = (close - close[1]) * 100.0';
+const withAdapters = (src) => {
+  let x = src;
+  for (const l of ['long-liquidation', 'short-liquidation', 'funding', 'ETF flow']) x = enable(x, l);
+  x = wire(x, 'Long liquidations', LIQL);
+  x = wire(x, 'Short liquidations', LIQS);
+  x = wire(x, 'Aggregated funding rate', FUND);
+  x = wire(x, 'US spot BTC ETF net flow', ETF);
+  return x;
+};
+// maxAnom at its ceiling so the same run also measures worst-case table height.
+const FULL_SRC = withAdapters(rewrite(BASE, /input\.int\(5, "Max anomalies listed", minval = 1, maxval = 9/, 'input.int(9, "Max anomalies listed", minval = 1, maxval = 9', 'maxAnom ceiling'));
+const full = await run(rows, { source: FULL_SRC });
+const F = decode(full);
 
-// ---------- 2. no repaint: prefix invariance, including the held states ----------
-// Hysteresis carries state across bars, which is exactly the construct most
-// likely to repaint. It is included in the hooks below deliberately.
-const HOOKS = ['t_oiZ24', 't_oiZ24s', 't_premZ', 't_partZ', 't_volPct', 't_trendDist', 't_oi24St', 't_pmImp', 't_anomCount', 't_aligned'];
-let repaint = 0;
-for (const frac of [0.6, 0.85]) {
-  const k = Math.floor(rows.length * frac);
-  const cut = await run(rows.slice(0, k));
-  for (const h of HOOKS) {
-    const full = ser(ctx, h), part = ser(cut, h, k);
-    for (let i = 0; i < k - 1; i++) {
-      if (!eq(full[i], part[i])) { repaint++; fails.push(`repaint ${h} bar#${i}: full=${full[i]} truncated@${k}=${part[i]}`); break; }
+// ============================================================ 1. semantics ===
+// The v3 rule: a direction word is a function of a raw value's sign and of
+// nothing else. Every violation here would be the indicator telling the user
+// something the data does not say.
+const RAWMAP = [
+  ['OI 24H   EXPANSION/REDUCTION', 'oi24', 't_oiChg24', ctx, D],
+  ['OI 4H    EXPANSION/REDUCTION', 'oi4', 't_oiChg4', ctx, D],
+  ['PREMIUM  POSITIVE/NEGATIVE', 'pm', 't_premium', ctx, D],
+  // Funding, ETF and the liquidation balance only exist when an adapter is
+  // wired, so their invariants are asserted on the all-adapters run.
+  ['FUNDING  LONG/SHORT', 'fd', 't_fundRaw', full, F],
+  ['ETF 5D   INFLOW/OUTFLOW', 'et', 't_etf5d', full, F],
+  ['LIQ BAL  MORE LONG/SHORT', 'lqB', 't_liqBal', full, F],
+];
+let semBad = 0;
+const semDetail = [];
+for (const [name, dirKey, rawKey, C, Dc] of RAWMAP) {
+  const raw = ser(C, rawKey), dir = Dc.dir[dirKey];
+  let bad = 0, seen = 0;
+  for (let i = 0; i < nb; i++) {
+    if (!Number.isFinite(raw[i]) || !Number.isFinite(dir[i]) || dir[i] === 0) continue;
+    seen++;
+    if (Math.sign(raw[i]) !== dir[i]) bad++;
+  }
+  semBad += bad;
+  semDetail.push(`${name}: ${seen} signed bars, ${bad} violations`);
+  if (bad) fails.push(`SEMANTIC VIOLATION ${name}: ${bad}/${seen} bars where the direction word contradicts the raw value`);
+}
+line(1, check(semBad === 0, `${semBad} semantic violations`),
+  'direction words follow the RAW value, never the z-score — OI expansion/reduction, premium sign, funding sign, ETF inflow/outflow');
+semDetail.forEach(note);
+
+// Trend and SOPR: the raw value IS the deviation, so the state sign must equal
+// the raw sign by construction. Asserted rather than assumed.
+{
+  const pairs = [['TREND', 't_trSt', 't_trendDist'], ['SOPR', 't_spSt', 't_soprDev']];
+  let bad = 0;
+  for (const [name, st, rawK] of pairs) {
+    const s = ser(ctx, st), raw = ser(ctx, rawK);
+    for (let i = 0; i < nb; i++) {
+      if (!Number.isFinite(s[i]) || s[i] === 0 || !Number.isFinite(raw[i])) continue;
+      if (Math.sign(s[i]) !== Math.sign(raw[i])) { bad++; if (bad === 1) fails.push(`${name} state sign disagrees with its raw deviation at bar#${i}`); }
     }
   }
+  line(2, check(bad === 0, `${bad} trend/SOPR sign disagreements`),
+    'trend and SOPR states carry the sign of their own raw deviation on every engaged bar');
 }
-line(2, check(repaint === 0, `${repaint} series repainted`),
-  'no repaint — past bars unchanged when future bars are added, hysteresis states included');
 
-// ---------- 3. the OI units guard, both paths independently ----------
-const usd = await run(rows, { usdOI: true });
-const cur = await run(rows, { oiCurrency: 'USD' });
-const okBase = ser(ctx, 't_oiOK').filter((x) => x === 1).length;
-const okUsd = ser(usd, 't_oiOK').filter((x) => x === 1).length;
-const okCur = ser(cur, 't_oiOK').filter((x) => x === 1).length;
-line(3, check(okUsd === 0 && okCur === 0 && okBase > rows.length * 0.9,
-  `units guard wrong: magnitude path trusted ${okUsd}, currency path trusted ${okCur}, base-unit accepted ${okBase}/${rows.length}`),
-  `USD-notional OI rejected by BOTH paths — magnitude (${okUsd} trusted) and declared currency (${okCur} trusted); base-unit accepted on ${okBase}/${rows.length}`);
-
-// ---------- 4. a missing feed degrades to unavailable, never to a value ----------
-const soprOK = ser(ctx, 't_soprOK').filter((x) => x === 1).length;
-const soprVals = ser(ctx, 't_sopr').filter((x) => !Number.isNaN(x)).length;
-const spEngaged = S['t_spSt'].filter((x) => x !== 0 && !Number.isNaN(x)).length;
-line(4, check(soprOK === 0 && soprVals === 0 && spEngaged === 0,
-  `SOPR absent but ${soprOK} bars claimed availability, ${soprVals} carried a value, ${spEngaged} produced a state`),
-  `absent feed stays absent — SOPR unavailable on all ${rows.length} bars: no value, no state, no anomaly`);
-
-// ---------- 5. z-scores are actually standardised ----------
-const zs = { oiZ4: 't_oiZ4', oiZ24: 't_oiZ24', premZ: 't_premZ', partZ: 't_partZ' };
-const zStats = {};
-let zBad = 0;
-for (const [name, key] of Object.entries(zs)) {
-  const v = ser(ctx, key).filter((x) => !Number.isNaN(x)).slice(200);
-  if (v.length < 100) { zBad++; fails.push(`${name}: only ${v.length} finite values`); continue; }
-  zStats[name] = [mean(v), sd(v)];
-  if (Math.abs(mean(v)) > 0.35 || Math.abs(sd(v) - 1) > 0.4) { zBad++; fails.push(`${name} not standardised: mean ${mean(v).toFixed(2)} sd ${sd(v).toFixed(2)}`); }
+// Participation is a RELATIVE measure, so its word is z-driven ON PURPOSE and
+// the vocabulary says so. What must never appear is a dominance claim.
+{
+  const pz = ser(ctx, 't_partZ'), dir = D.dir.pt;
+  let bad = 0;
+  for (let i = 0; i < nb; i++) {
+    if (!Number.isFinite(pz[i]) || !Number.isFinite(dir[i]) || dir[i] === 0) continue;
+    if (Math.sign(pz[i]) !== dir[i]) bad++;
+  }
+  const src = RAW;
+  const banned = ['SPOT DOMINANT', 'PERP DOMINANT'].filter((w) => src.includes(w));
+  line(3, check(bad === 0 && banned.length === 0, `${bad} participation sign errors; banned vocabulary present: ${banned.join(', ')}`),
+    `participation reads RELATIVE SPOT/PERP SURGE from its own z (${bad} sign errors), and the words "SPOT DOMINANT"/"PERP DOMINANT" no longer exist in the source`);
 }
-line(5, check(zBad === 0, `${zBad} z-score series not standardised`),
-  `rolling z-scores standardised (${Object.entries(zStats).map(([k, [m, s]]) => `${k} ${m.toFixed(2)}±${s.toFixed(2)}`).join(', ')})`);
 
-// ---------- 6. the premium measure is definitionally sound ----------
-// Binance derives funding from the premium index, so a correct perp/spot premium
-// MUST correlate positively with realised funding. This is what separates
-// "measuring basis" from "measuring noise".
-const withF = all.filter((r) => r.spotClose != null && r.funding != null);
-const prem = withF.map((r) => r.close / r.spotClose - 1);
-const fund = withF.map((r) => r.funding);
-const corr = (a, b) => { const ma = mean(a), mb = mean(b); return mean(a.map((x, i) => (x - ma) * (b[i] - mb))) / (sd(a) * sd(b)); };
-const c1 = corr(prem, fund);
-const sm = prem.map((_, i) => (i < 6 ? null : mean(prem.slice(i - 5, i + 1))));
-const idx = sm.map((v, i) => (v === null ? -1 : i)).filter((i) => i >= 0);
-const c6 = corr(idx.map((i) => sm[i]), idx.map((i) => fund[i]));
-line(6, check(c1 > 0.4 && c6 > 0.5, `premium/funding correlation too weak: ${c1.toFixed(3)} / ${c6.toFixed(3)}`),
-  `perp premium tracks funding as it must by construction (r=${c1.toFixed(3)} raw, ${c6.toFixed(3)} on 24h mean)`);
-console.log(`     median premium ${(prem.slice().sort((a, b) => a - b)[Math.floor(prem.length / 2)] * 100).toFixed(4)}% — a persistent level offset, which is why every state uses a z-score and never an absolute threshold`);
+// ========================================================== 2. percentiles ===
+// Range, and order-correctness against the same window. Both hold under either
+// convention for whether the current bar counts itself, so neither test bakes
+// in an assumption about TradingView's exact tie handling.
+{
+  const PCT = ['t_oiP24', 't_oiP4', 't_premP', 't_partP', 't_rvolSpotP', 't_rvolPerpP', 't_volPct'];
+  let outOfRange = 0;
+  for (const k of PCT) for (const v of ser(ctx, k)) if (Number.isFinite(v) && (v < 0 || v > 100)) outOfRange++;
 
-// ---------- 7. the ANOMALIES count matches the engaged states ----------
-// A headline count that drifts from its own list is worse than no count.
-const anom = ser(ctx, 't_anomCount');
-let anomBad = 0;
-for (let i = 0; i < rows.length; i++) {
-  const want = ANOM_STATES.reduce((s, k) => s + (S[k][i] !== 0 && !Number.isNaN(S[k][i]) ? 1 : 0), 0);
-  if (anom[i] !== want) { anomBad++; if (anomBad === 1) fails.push(`anomaly count bar#${i}: reported ${anom[i]}, engaged measurements ${want}`); }
+  // Order-correctness on real data: when the raw value is the maximum of its own
+  // 180-bar window, the rank must be at the top of the scale, and vice versa.
+  const WIN = 180;
+  const pairs = [['OI 24H', 't_oiChg24', 't_oiP24'], ['OI 4H', 't_oiChg4', 't_oiP4'], ['PREMIUM', 't_premium', 't_premP'], ['PARTICIP', 't_partRaw', 't_partP'], ['SPOT RVOL', 't_rvolSpot', 't_rvolSpotP'], ['PERP RVOL', 't_rvolPerp', 't_rvolPerpP']];
+  let orderBad = 0, orderSeen = 0;
+  for (const [, rawK, pK] of pairs) {
+    const raw = ser(ctx, rawK), p = ser(ctx, pK);
+    for (let i = WIN + 60; i < nb; i++) {
+      if (!Number.isFinite(p[i])) continue;
+      const w = raw.slice(i - WIN, i + 1);
+      if (w.some((x) => !Number.isFinite(x))) continue;
+      const mx = Math.max(...w), mn = Math.min(...w);
+      if (raw[i] === mx && w.filter((x) => x === mx).length === 1) { orderSeen++; if (p[i] < 100 * (WIN - 1) / WIN) orderBad++; }
+      if (raw[i] === mn && w.filter((x) => x === mn).length === 1) { orderSeen++; if (p[i] > 100 / WIN) orderBad++; }
+    }
+  }
+  line(4, check(outOfRange === 0 && orderBad === 0 && orderSeen > 50,
+    `percentile: ${outOfRange} out of [0,100], ${orderBad}/${orderSeen} order violations (need >= 50 samples)`),
+    `percentiles stay in [0,100] across ${PCT.length} series, and rank correctly against their own window (${orderSeen} window extremes checked, ${orderBad} wrong)`);
 }
-line(7, check(anomBad === 0, `${anomBad} bars where ANOMALIES disagreed with the engaged measurements`),
-  `ANOMALIES count equals the number of engaged measurements on all ${rows.length} bars`);
 
-// ---------- 8. alignment is bounded and honest ----------
-const al = ser(ctx, 't_aligned'), av = ser(ctx, 't_alignAvail');
-let alBad = 0;
-for (let i = 0; i < rows.length; i++) {
-  if (Number.isNaN(al[i]) || Number.isNaN(av[i])) continue;
-  // aligned counts the larger of the two directions, so it can never exceed the
-  // number of available measurements, nor fall below half of them.
-  if (al[i] > av[i] || (av[i] > 0 && al[i] * 2 < av[i])) { alBad++; if (alBad === 1) fails.push(`alignment bar#${i}: ${al[i]}/${av[i]} is impossible`); }
+// A direct fixture on ta.percentrank itself, since pctOf is a thin wrapper: a
+// strictly rising series must rank 100, a strictly falling one must rank at the
+// floor of the scale.
+{
+  const T0 = 1700000000000 - (1700000000000 % H4);
+  const synth = (f) => Array.from({ length: 120 }, (_, i) => { const c = f(i); return bar(T0 + i * H4, c, c, c, c, 1); });
+  const prov = (s) => new (class extends BaseProvider {
+    constructor() { super({ requiresApiKey: false, providerName: 'L' }); }
+    getSupportedTimeframes() { return new Set(['240']); }
+    async _getMarketDataNative() { return s; }
+    async getSymbolInfo(id) { return { ticker: id, name: id, type: 'crypto', currency: 'USDT', basecurrency: 'X', timezone: 'Etc/UTC', minmov: 1, pricescale: 100 }; }
+  })();
+  const mini = '//@version=6\nindicator("m")\nplot(ta.percentrank(close, 20), "p", display = display.none)\n';
+  const up = await new PineTS(prov(synth((i) => 100 + i)), 'X', '240', 120).run(mini);
+  const dn = await new PineTS(prov(synth((i) => 1000 - i)), 'X', '240', 120).run(mini);
+  const uv = fin(ser(up, 'p', 120)).slice(25), dv = fin(ser(dn, 'p', 120)).slice(25);
+  line(5, check(uv.length > 50 && uv.every((v) => v === 100) && dv.every((v) => v <= 5),
+    `percentrank fixture: rising max ${Math.min(...uv)}, falling max ${Math.max(...dv)}`),
+    `ta.percentrank fixture — a strictly rising series ranks 100 on all ${uv.length} bars, a strictly falling one ranks at the floor (max ${Math.max(...dv)})`);
 }
-line(8, check(alBad === 0, `${alBad} bars with an impossible alignment count`),
-  'cross-data alignment stays within [ceil(avail/2), avail] on every bar');
 
-// ---------- 9. dashboard layout, and nothing prescriptive ----------
-const tables = ctx.plots?.__tables__?.data?.at(-1)?.value ?? [];
-const cells = tables.length ? JSON.stringify(tables[0]) : '';
-const wanted = ['WHAT CHANGED', 'ANOMALIES', 'REGIME', 'IMPULSE', 'CONTEXT', 'TREND', 'VOLATILITY', 'OI 24H', 'OI 4H', 'FUNDING', 'PREMIUM', 'PARTICIPATION', 'ALIGNMENT', 'ETF 5D', 'SOPR', 'EVIDENCE: DESCRIPTIVE', 'ACTION: CONTEXT ONLY'];
-const missing = wanted.filter((w) => !cells.includes(w));
-const banned = ['DO NOT CHASE', 'REDUCE EXPOSURE', 'LONG READY', 'RISK-ON', 'RISK-OFF', 'HEALTHY', 'DISTRIBUTION RISK'].filter((w) => cells.includes(w));
-line(9, check(tables.length > 0 && missing.length === 0 && banned.length === 0,
-  `dashboard missing: ${missing.join(', ') || 'none'}${banned.length ? `; still prescriptive: ${banned.join(', ')}` : ''}`),
-  `dashboard renders all ${wanted.length} sections in priority order, with no prescriptive or predictive label`);
+// ================================================ 3. chart-symbol independence
+// The whole point of the reference symbol. Put the script on a chart that is
+// not BTC and every Radar number must be bit-identical.
+{
+  const alt = await run(rows, { chart: ALT });
+  const HOOKS = ['t_refClose', 't_atr14', 't_volPct', 't_trendDist', 't_px24', 't_oiChg24', 't_oiZ24', 't_oiP24',
+    't_premium', 't_premZ', 't_premP', 't_partRaw', 't_partZ', 't_rvolSpot', 't_rvolPerp', 't_mom12w',
+    't_trSt', 't_oi24St', 't_anomCount', 't_statPack', 't_dirPack', 't_lvlPack'];
+  let diff = 0; const which = [];
+  for (const h of HOOKS) {
+    const a = ser(ctx, h), b = ser(alt, h);
+    for (let i = 0; i < nb; i++) if (!eq(a[i], b[i])) { diff++; which.push(`${h}@${i} ${a[i]} vs ${b[i]}`); break; }
+  }
+  if (diff) fails.push(`chart dependence: ${which.slice(0, 4).join('; ')}`);
+  // And prove the alt chart really is a different asset, or the test is vacuous.
+  const chartDiffers = ser(ctx, 't_refClose')[nb - 1] !== buildSeries(rows)[ALT][nb - 1].close;
+  line(6, check(diff === 0 && chartDiffers, `${diff} of ${HOOKS.length} hooks changed with the chart symbol`),
+    `chart-symbol independence — all ${HOOKS.length} radar series identical on a BTCUSDT.P chart and on a non-BTC chart`);
+}
 
-console.log('\n' + '='.repeat(94));
+// ======================================================== 4. 4H enforcement ===
+{
+  const ok240 = ser(ctx, 't_tfOK');
+  const h1 = await run(rows, { tf: '60' });
+  const ok60 = ser(h1, 't_tfOK');
+  // The predicate is what the runtime.error is wired to. Assert the wiring in
+  // the source too, since the error line itself is stripped for the offline run.
+  const wired = /tfOK = timeframe\.in_seconds\(timeframe\.period\) == 14400/.test(RAW)
+    && /if not tfOK\n\s+runtime\.error\(/.test(RAW);
+  line(7, check(ok240.every((v) => v === 1) && ok60.every((v) => v === 0) && wired,
+    `4H predicate: 240 -> ${[...new Set(ok240)]}, 60 -> ${[...new Set(ok60)]}, wired ${wired}`),
+    `exact-4H predicate is 1 on a 240 chart and 0 on a 60 chart, and runtime.error is wired directly to it`);
+  note('the error is RAISED only on TradingView — PineTS evaluates it inside the 1D security context too, so the line is stripped offline and the predicate is asserted instead');
+}
+
+// ============================================================ 5. no repaint ===
+// Held state — hysteresis levels, the event buffer, freshness counters — is
+// exactly the construct most likely to repaint, so all of it is in the hooks.
+{
+  const HOOKS = ['t_oiZ24', 't_oiZ24s', 't_oiP24', 't_premZ', 't_premP', 't_partZ', 't_volPct', 't_trendDist',
+    't_oi24St', 't_trSt', 't_anomCount', 't_maxExt', 't_lvlPack', 't_dirPack', 't_statPack', 't_evPush'];
+  let repaint = 0;
+  for (const frac of [0.6, 0.85]) {
+    const k = Math.floor(rows.length * frac);
+    const cut = await run(rows.slice(0, k));
+    for (const h of HOOKS) {
+      const full = ser(ctx, h), part = ser(cut, h, k);
+      for (let i = 0; i < k - 1; i++) {
+        if (!eq(full[i], part[i])) { repaint++; fails.push(`repaint ${h} bar#${i}: full=${full[i]} truncated@${k}=${part[i]}`); break; }
+      }
+    }
+  }
+  line(8, check(repaint === 0, `${repaint} series repainted`),
+    `no repaint — past bars unchanged when future bars are added, across all ${HOOKS.length} hooks including every held state and the event counter`);
+}
+
+// ======================================================= 6. the units guard ===
+{
+  const usd = await run(rows, { usdOI: true });
+  const cur = await run(rows, { oiCurrency: 'USD' });
+  const okBase = ser(ctx, 't_oiOK').filter((x) => x === 1).length;
+  const okUsd = ser(usd, 't_oiOK').filter((x) => x === 1).length;
+  const okCur = ser(cur, 't_oiOK').filter((x) => x === 1).length;
+  line(9, check(okUsd === 0 && okCur === 0 && okBase > rows.length * 0.9,
+    `units guard wrong: magnitude path trusted ${okUsd}, currency path trusted ${okCur}, base-unit accepted ${okBase}/${rows.length}`),
+    `USD-notional OI rejected by BOTH paths — magnitude (${okUsd} trusted) and declared currency (${okCur} trusted); base-unit accepted on ${okBase}/${rows.length}`);
+}
+
+// ================================================= 7. absent / missing feeds ===
+{
+  const soprVals = fin(ser(ctx, 't_sopr')).length;
+  const spEngaged = ser(ctx, 't_spSt').filter((x) => x !== 0 && Number.isFinite(x)).length;
+  const soprStat = D.stat.sopr.filter((x) => x !== 0).length;
+  // Every adapter is off in the default run, so none of them may ever produce a
+  // level, a percentile or an anomaly.
+  const offLvl = ['fd', 'et', 'lqL', 'lqS'].map((k) => D.lvl[k].filter((x) => x > 0).length);
+  const offVals = ['t_fundRaw', 't_etf5d', 't_liqLZ', 't_liqSZ'].map((k) => fin(ser(ctx, k)).length);
+  line(10, check(soprVals === 0 && spEngaged === 0 && soprStat === 0 && offLvl.every((x) => x === 0) && offVals.every((x) => x === 0),
+    `absent feed leaked: sopr ${soprVals}v/${spEngaged}s/${soprStat}ok, adapters levels ${offLvl} values ${offVals}`),
+    `a missing feed stays missing — SOPR and all four disabled adapters produce no value, no level and no anomaly on any of ${nb} bars`);
+}
+
+// ================================================ 8. liquidation adapters ======
+// Wired to a deterministic expression at the input.source() boundary, so the
+// whole chain below it is the real code.
+
+{
+  const lq = full, L = F;
+  const lz = ser(lq, 't_liqLZ'), lp = ser(lq, 't_liqLP'), sz = ser(lq, 't_liqSZ'), bal = ser(lq, 't_liqBal');
+  const lvlL = L.lvl.lqL, lvlS = L.lvl.lqS;
+  // 1. the adapters actually became available
+  const availL = L.stat.lL.filter((x) => x >= 3).length;
+  // 2. liquidation levels only ever fire on the UPPER tail — a quiet bar is not
+  //    "unusually few liquidations"
+  let lowerTail = 0;
+  for (let i = 0; i < nb; i++) if (lvlL[i] > 0 && Number.isFinite(lz[i]) && lz[i] <= 0) lowerTail++;
+  for (let i = 0; i < nb; i++) if (lvlS[i] > 0 && Number.isFinite(sz[i]) && sz[i] <= 0) lowerTail++;
+  // 3. spikes are reachable at all, and both sides work
+  const spikeL = lvlL.filter((x) => x > 0).length, spikeS = lvlS.filter((x) => x > 0).length;
+  // 4. balance is bounded and signed correctly
+  let balBad = 0;
+  for (let i = 0; i < nb; i++) if (Number.isFinite(bal[i]) && (bal[i] < -1 || bal[i] > 1)) balBad++;
+  let balSign = 0;
+  for (let i = 0; i < nb; i++) if (Number.isFinite(bal[i]) && Number.isFinite(L.dir.lqB[i]) && L.dir.lqB[i] !== 0 && Math.sign(bal[i]) !== L.dir.lqB[i]) balSign++;
+  const tbl = readTable(lq).join('\n');
+  const shows = ['LONG LIQ', 'SHORT LIQ'].every((w) => tbl.includes(w));
+  line(11, check(availL > nb * 0.5 && lowerTail === 0 && spikeL > 0 && spikeS > 0 && balBad === 0 && balSign === 0 && shows,
+    `liq adapters: avail ${availL}, lower-tail fires ${lowerTail}, spikes ${spikeL}/${spikeS}, balance out-of-range ${balBad}, sign errors ${balSign}, rows ${shows}`),
+    `liquidation adapters end-to-end — ${availL}/${nb} bars available, ${spikeL} long and ${spikeS} short spikes, ${lowerTail} fires on the lower tail (must be 0), balance in [-1,1] with the correct sign on every bar`);
+  note(`percentile present on ${fin(lp).length} bars; both sides appear in the dashboard and in ANOMALIES`);
+}
+
+// ============================================= 9. stale and misconfigured ======
+{
+  // Freezes after 60% of the run. STALE must follow within the documented
+  // window, and every reading must stop.
+  const cut = Math.floor(nb * 0.6);
+  let src = BASE;
+  src = enable(src, 'long-liquidation');
+  src = wire(src, 'Long liquidations', `extLiqL    = bar_index < ${cut} ? math.abs(close - close[1]) * volume : 4242.0`);
+  const st = await run(rows, { source: src });
+  const S = decode(st);
+  const tail = S.stat.lL.slice(cut + 10);
+  const lvlAfter = S.lvl.lqL.slice(cut + 10).filter((x) => x > 0).length;
+  const zAfter = fin(ser(st, 't_liqLZ').slice(cut + 10)).length;
+  const becameStale = tail.length > 0 && tail.every((x) => x === 2);
+  const wasFresh = S.stat.lL.slice(200, cut - 10).filter((x) => x >= 3).length > 0;
+
+  // Enabled but never wired: MISCONFIGURED, and distinct from both UNAVAILABLE
+  // and STALE.
+  const mis = await run(rows, { source: enable(BASE, 'long-liquidation') });
+  const M = decode(mis);
+  const allMis = M.stat.lL.every((x) => x === 1);
+  const misLvl = M.lvl.lqL.filter((x) => x > 0).length;
+  const misTbl = readTable(mis).join('\n');
+
+  line(12, check(wasFresh && becameStale && lvlAfter === 0 && zAfter === 0 && allMis && misLvl === 0 && misTbl.includes('MISCONFIGURED'),
+    `stale/misconfigured: fresh-before ${wasFresh}, stale-after ${becameStale}, levels after ${lvlAfter}, z after ${zAfter}, misconfigured ${allMis}/${misLvl}`),
+    `a frozen feed becomes STALE within ${+(RAW.match(/BARS_STALE_LIQ\s*=\s*(\d+)/)?.[1] ?? 0)} bars and stops producing readings (${lvlAfter} levels, ${zAfter} values after); an enabled-but-unwired adapter reads MISCONFIGURED on all ${nb} bars and is shown as such, never as STALE or UNAVAILABLE`);
+}
+
+// ========================================================= 10. anomalies ======
+{
+  const anom = ser(ctx, 't_anomCount');
+  const spSt = ser(ctx, 't_spSt');
+  let bad = 0;
+  for (let i = 0; i < nb; i++) {
+    const want = LVL_KEYS.reduce((s, k) => s + (D.lvl[k][i] > 0 ? 1 : 0), 0) + (spSt[i] !== 0 && Number.isFinite(spSt[i]) ? 1 : 0);
+    if (anom[i] !== want) { bad++; if (bad === 1) fails.push(`anomaly count bar#${i}: reported ${anom[i]}, engaged ${want}`); }
+  }
+  const mx = ser(ctx, 't_maxExt');
+  let extBad = 0;
+  for (let i = 0; i < nb; i++) if (Number.isFinite(mx[i]) && (mx[i] < 50 || mx[i] > 100)) extBad++;
+  line(13, check(bad === 0 && extBad === 0, `${bad} count mismatches, ${extBad} ranking values outside [50,100]`),
+    `ANOMALIES count equals the engaged measurements on all ${nb} bars, and the percentile-extremeness used to rank them stays in [50,100]`);
+}
+
+// =================================================== 11. market mechanics =====
+{
+  const px = ser(ctx, 't_px24'), oi = ser(ctx, 't_oiChg24');
+  const mp = D.dir.mechPx, mo = D.dir.mechOi;
+  let bad = 0;
+  const seen = new Set();
+  for (let i = 0; i < nb; i++) {
+    if (Number.isFinite(px[i]) && Number.isFinite(mp[i]) && Math.sign(px[i]) !== mp[i]) bad++;
+    if (Number.isFinite(oi[i]) && Number.isFinite(mo[i]) && Math.sign(oi[i]) !== mo[i]) bad++;
+    if (mp[i] && mo[i]) seen.add(`${mp[i]}|${mo[i]}`);
+  }
+  const four = ['1|1', '1|-1', '-1|1', '-1|-1'];
+  const missing = four.filter((k) => !seen.has(k));
+  line(14, check(bad === 0 && missing.length === 0, `${bad} sign errors; states never observed: ${missing.join(', ') || 'none'}`),
+    `MARKET MECHANICS — both axes take the sign of their own raw 24h change (${bad} errors), and all four states occur in the window`);
+  note('price up + position build / build-down / reduction-up / reduction-down all observed; the label is a description, and no test asserts anything about what follows');
+}
+
+// ===================================================== 12. recent events ======
+{
+  const cnt = ser(ctx, 't_evCount'), push = ser(ctx, 't_evPush'), dup = ser(ctx, 't_evDup');
+  let bad = 0, nonMono = 0;
+  for (let i = 0; i < nb; i++) {
+    if (Number.isFinite(cnt[i]) && (cnt[i] < 0 || cnt[i] > 5)) bad++;
+    if (Number.isFinite(cnt[i]) && Number.isFinite(push[i]) && cnt[i] !== Math.min(5, push[i])) bad++;
+    if (i && Number.isFinite(push[i]) && Number.isFinite(push[i - 1]) && push[i] < push[i - 1]) nonMono++;
+  }
+  // Dedup: no two adjacent lines in the rendered buffer may be identical.
+  const evRows = readTable(ctx).slice(2).filter((r) => /^(now|\d+[hd]) \| /.test(r)).map((r) => r.split(' | ')[1]);
+  let adj = 0;
+  for (let i = 1; i < evRows.length; i++) if (evRows[i] === evRows[i - 1]) adj++;
+  line(15, check(bad === 0 && nonMono === 0 && adj === 0 && push.at(-1) > 0,
+    `events: ${bad} length/consistency errors, ${nonMono} non-monotonic, ${adj} adjacent duplicates`),
+    `RECENT EVENTS — buffer never exceeds 5, always equals min(5, accepted pushes), the counter never decreases (${push.at(-1)} accepted, ${dup.at(-1)} duplicates suppressed), and no two adjacent entries repeat`);
+}
+
+// ============================================ 13. alerts: gating and shape ====
+// PineTS treats the last historical bar as confirmed — it has no realtime bar —
+// so "does not fire on a forming bar" cannot be measured here. What CAN be
+// measured offline is that every alert is structurally inside the confirmed
+// block, carries once-per-bar-close frequency, and never repeats the same
+// message on consecutive bars. Actual firing on a live TradingView bar is
+// MANUAL VALIDATION REQUIRED.
+{
+  const am = await run(rows, { source: FULL_SRC, alertMode: 'all' });
+  const alerts = am.alerts ?? [];
+  const freqBad = alerts.filter((a) => a.freq !== 'alert.freq_once_per_bar_close').length;
+
+  // Structural: exactly one alert() call in the source, inside fire(); and every
+  // fire() call site is indented under the `if conf` block.
+  const alertCalls = RAW.split('\n').filter((l) => !l.trimStart().startsWith('//')).join('\n').match(/\balert\(/g)?.length ?? 0;
+  const inFire = /^fire\(txt\) =>\n    alert\(txt, alert\.freq_once_per_bar_close\)\n    pushEvent\(txt\)$/m.test(RAW);
+  const lines = RAW.split('\n');
+  const confAt = lines.findIndex((l) => l === 'if conf');
+  const confEnd = lines.findIndex((l, i) => i > confAt && l.length > 0 && !l.startsWith(' '));
+  const fireLines = lines.map((l, i) => [l, i]).filter(([l]) => /(^|\s)fire\(/.test(l) && !l.startsWith('fire(txt)'));
+  const outside = fireLines.filter(([, i]) => i < confAt || i > confEnd);
+
+  let repeats = 0;
+  const byBar = new Map();
+  for (const a of alerts) byBar.set(a.bar_index, [...(byBar.get(a.bar_index) ?? []), a.message]);
+  for (const [b, msgs] of byBar) {
+    const prev = byBar.get(b - 1) ?? [];
+    repeats += msgs.filter((m) => prev.includes(m)).length;
+  }
+
+  line(16, check(alerts.length > 0 && freqBad === 0 && alertCalls === 1 && inFire && outside.length === 0 && repeats === 0,
+    `alerts: ${alerts.length} fired, ${freqBad} wrong frequency, ${alertCalls} alert() call sites, in fire() ${inFire}, ${outside.length} fire() calls outside the confirmed block, ${repeats} consecutive-bar repeats`),
+    `alerts — ${alerts.length} fired, all with freq_once_per_bar_close; the single alert() call site lives in fire(), all ${fireLines.length} fire() calls sit inside the barstate.isconfirmed block, and no message repeats on consecutive bars`);
+  note('PineTS has no realtime bar, so "never fires on an unconfirmed bar" is structural here and MANUAL on TradingView');
+}
+
+// ======================================================== 14. table capacity ===
+{
+  // Maximum configuration: 9 anomalies, 5 events, every adapter live — the
+  // FULL_SRC run built above.
+  const used = ser(full, 't_rowsUsed').at(-1);
+  const cap = +(RAW.match(/TBL_ROWS = (\d+)/)?.[1] ?? 0);
+  const t = readTable(full);
+  const SECTIONS = ['BTC 4H MARKET RADAR', 'RECENT EVENTS', 'WHAT CHANGED', 'CURRENT ANOMALIES', 'MARKET MECHANICS',
+    'TREND / VOLATILITY', 'DERIVATIVES', 'PARTICIPATION', 'FLOW', 'SLOW CONTEXT', 'DATA HEALTH',
+    'EVIDENCE: DESCRIPTIVE', 'ACTION: CONTEXT ONLY'];
+  const joined = t.join('\n');
+  const missing = SECTIONS.filter((w) => !joined.includes(w));
+  const banned = ['DO NOT CHASE', 'REDUCE EXPOSURE', 'LONG READY', 'RISK-ON', 'RISK-OFF', 'HEALTHY', 'DISTRIBUTION RISK', 'ALIGNED', 'SPOT DOMINANT', 'PERP DOMINANT'].filter((w) => joined.includes(w));
+  line(17, check(used > 0 && used <= cap && cap >= 55 && missing.length === 0 && banned.length === 0,
+    `table: used ${used} of ${cap}; missing ${missing.join(', ') || 'none'}; banned ${banned.join(', ') || 'none'}`),
+    `table capacity — worst case (9 anomalies, 5 events, all four adapters live) uses ${used} of ${cap} allocated rows, and all ${SECTIONS.length} sections render with no prescriptive or predictive label`);
+  note(`headroom ${cap - used} rows; every cell write is bounds-guarded, so exceeding capacity would drop rows rather than corrupt the table`);
+  // The dashboard must lead with events and anomalies, not with a reading.
+  const order = ['RECENT EVENTS', 'CURRENT ANOMALIES', 'MARKET MECHANICS', 'TREND / VOLATILITY', 'DERIVATIVES', 'PARTICIPATION', 'FLOW', 'SLOW CONTEXT', 'DATA HEALTH'];
+  const pos = order.map((w) => t.findIndex((r) => r.includes(w)));
+  const ordered = pos.every((v, i) => i === 0 || (v > pos[i - 1] && v >= 0));
+  check(ordered, `dashboard sections out of priority order: ${JSON.stringify(pos)}`);
+  note(`section order verified: ${ordered ? 'as specified' : 'WRONG'}`);
+}
+
+// ================================================ 15. z-score standardisation ==
+{
+  const zs = { oiZ4: 't_oiZ4', oiZ24: 't_oiZ24', premZ: 't_premZ', partZ: 't_partZ' };
+  const stats = {}; let bad = 0;
+  for (const [name, key] of Object.entries(zs)) {
+    const v = fin(ser(ctx, key)).slice(200);
+    if (v.length < 100) { bad++; fails.push(`${name}: only ${v.length} finite values`); continue; }
+    stats[name] = [mean(v), sd(v)];
+    if (Math.abs(mean(v)) > 0.35 || Math.abs(sd(v) - 1) > 0.4) { bad++; fails.push(`${name} not standardised: mean ${mean(v).toFixed(2)} sd ${sd(v).toFixed(2)}`); }
+  }
+  line(18, check(bad === 0, `${bad} z-score series not standardised`),
+    `rolling z-scores standardised (${Object.entries(stats).map(([k, [m, s]]) => `${k} ${m.toFixed(2)}±${s.toFixed(2)}`).join(', ')})`);
+}
+
+// ============================================= 16. the premium is what it says =
+// Binance derives funding from the premium index, so a correct perp/spot
+// premium MUST correlate positively with realised funding. This is what
+// separates "measuring basis" from "measuring noise".
+{
+  const withF = all.filter((r) => r.spotClose != null && r.funding != null);
+  const prem = withF.map((r) => r.close / r.spotClose - 1);
+  const fund = withF.map((r) => r.funding);
+  const corr = (a, b) => { const ma = mean(a), mb = mean(b); return mean(a.map((x, i) => (x - ma) * (b[i] - mb))) / (sd(a) * sd(b)); };
+  const c1 = corr(prem, fund);
+  const sm = prem.map((_, i) => (i < 6 ? null : mean(prem.slice(i - 5, i + 1))));
+  const idx = sm.map((v, i) => (v === null ? -1 : i)).filter((i) => i >= 0);
+  const c6 = corr(idx.map((i) => sm[i]), idx.map((i) => fund[i]));
+  line(19, check(c1 > 0.4 && c6 > 0.5, `premium/funding correlation too weak: ${c1.toFixed(3)} / ${c6.toFixed(3)}`),
+    `perp premium tracks funding as it must by construction (r=${c1.toFixed(3)} raw, ${c6.toFixed(3)} on the 24h mean)`);
+  note(`median premium ${(prem.slice().sort((a, b) => a - b)[Math.floor(prem.length / 2)] * 100).toFixed(4)}% — a persistent level offset, which is why intensity is a rank and never an absolute threshold`);
+}
+
+// ============================================ 17. prospective cohort integrity =
+// Pure logic, no dataset needed: the same module audit/event-log.mjs uses.
+{
+  const a = { schema: 3, freeze: '2026-09-06', indicatorHash: 'aaaa', configHash: 'bbbb', thresholds: 'v3' };
+  const b = { ...a, indicatorHash: 'cccc' };
+  const c = { ...a, configHash: 'dddd' };
+  const d = { ...a, freeze: '2026-10-01' };
+  const e = { ...a, schema: 4 };
+  const idA = cohortId(a);
+  const same = cohortMatches(a, { ...a });
+  const rejects = [b, c, d, e].map((x) => cohortMatches(a, x));
+  const idsDiffer = new Set([b, c, d, e].map((x) => cohortId(x))).size === 4 && !new Set([b, c, d, e].map((x) => cohortId(x))).has(idA);
+  const fname = `event-log-v3-${idA.slice(0, 12)}.json`;
+  // The three routing branches, exercised without touching the disk.
+  const dflt = 'event-log.json';
+  const rAppend = resolveLogTarget({ existing: { cohort: a }, current: a, newCohort: false, defaultPath: dflt });
+  const rCreate = resolveLogTarget({ existing: null, current: a, newCohort: false, defaultPath: dflt });
+  const rRefuse = resolveLogTarget({ existing: { cohort: b }, current: a, newCohort: false, defaultPath: dflt });
+  const rNew = resolveLogTarget({ existing: { cohort: b }, current: a, newCohort: true, defaultPath: dflt });
+  const rLegacy = resolveLogTarget({ existing: { indicatorHash: 'old', events: [] }, current: a, newCohort: false, defaultPath: dflt });
+  const routing = rAppend.action === 'append' && rAppend.path === dflt
+    && rCreate.action === 'create' && rCreate.path === dflt
+    && rRefuse.action === 'refuse' && !!rRefuse.hint
+    && rNew.action === 'create' && rNew.path !== dflt && rNew.path.startsWith('event-log-v3-')
+    && rLegacy.action === 'refuse';
+
+  line(20, check(same && rejects.every((r) => r === false) && idsDiffer && idA.length === 64 && routing,
+    `cohort guard: same ${same}, rejects ${rejects}, ids distinct ${idsDiffer}, routing ${routing} (${rAppend.action}/${rCreate.action}/${rRefuse.action}/${rNew.action}/${rLegacy.action})`),
+    `prospective cohort identity — a change to ANY of {schema, freeze, indicator hash, config hash, threshold version} produces a different cohort id and fails the match, so v3 events can never merge into a v2 log (new file would be ${fname})`);
+  note(`routing: same cohort -> append, no log -> create, mismatch -> REFUSE with a hint, mismatch + --new-cohort -> ${rNew.path}, pre-v3 file with no cohort stamp -> REFUSE`);
+}
+
+console.log('\n' + '='.repeat(98));
 if (fails.length) {
   console.log(`❌ ${fails.length} failure(s):`);
-  fails.slice(0, 12).forEach((f) => console.log('   ' + f));
+  fails.slice(0, 15).forEach((f) => console.log('   ' + f));
   process.exit(1);
 }
 console.log('✅ all checks passed');
-console.log('\nNot covered offline: real TradingView symbol spelling and history depth, the');
-console.log('lower-timeframe flow proxy, input.source() adapters, visual layout, alert firing.');
-console.log('Hysteresis stability: node audit/hysteresis-verify.mjs');
+console.log(`\nindicator sha256 ${HASH}`);
+console.log('\nOFFLINE VERIFIED above. TRADINGVIEW MANUAL VALIDATION REQUIRED for: symbol');
+console.log('spelling and history depth, request.security_lower_tf, the input.source() picker,');
+console.log('visual layout, alert delivery, and request.footprint(). See TRADINGVIEW-VALIDATION.md.');
+console.log('Stability audits: node audit/hysteresis-verify.mjs · node audit/smoothing-audit.mjs');
+console.log('                 node audit/oi4h-deseasonalization.mjs');

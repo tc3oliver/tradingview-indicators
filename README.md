@@ -12,7 +12,7 @@ history, and **tests you can run locally**.
 | Indicator | Description | Version |
 |---|---|---|
 | [session-highs-and-lows-indicator](./session-highs-and-lows-indicator/) | Marks the high and low of each SMC/ICT killzone with labels and extended dashed lines | v3.1 |
-| [btc-4h-market-intelligence](./btc-4h-market-intelligence/) | **BTC 4H Market Radar** — monitors OI, funding, perp premium, spot-vs-perp participation, ETF flow and SOPR; reports what is anomalous, what changed, and what agrees. No score, no signal, no action | v2 |
+| [btc-4h-market-intelligence](./btc-4h-market-intelligence/) | **BTC 4H Market Radar** — monitors OI, funding, perp premium, spot-vs-perp participation, liquidations, ETF flow and SOPR. Reports recent events, what is anomalous, what price and positioning did together, and which feeds are trustworthy. Direction from raw values, abnormality from percentiles. No score, no signal, no action | v3 |
 
 ## Research
 
@@ -57,6 +57,10 @@ npm test
 `btc-4h-market-intelligence` additionally needs a local dataset built once with
 `btc-4h-regime-engine/data/fetch.mjs` — 93 MB of Binance history, deliberately
 not committed.
+
+Where a test genuinely cannot run offline, it is listed as **TRADINGVIEW MANUAL
+VALIDATION REQUIRED** rather than quietly dropped — see
+`btc-4h-market-intelligence/TRADINGVIEW-VALIDATION.md`.
 
 Ground truth in these tests is deliberately **not** a re-run of the same logic. It
 is computed by a different algorithm and then compared — agreement only means
