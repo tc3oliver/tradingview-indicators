@@ -1,0 +1,27 @@
+{
+  "name": "session-highs-and-lows-indicator",
+  "version": "3.1.0",
+  "description": "TradingView Pine Script v5 indicator marking SMC/ICT killzone session highs and lows, with an offline PineTS test harness",
+  "author": "tc3oliver",
+  "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tc3oliver/tradingview-indicators.git"
+  },
+  "keywords": [
+    "tradingview",
+    "pine-script",
+    "pinescript",
+    "ict",
+    "smc",
+    "killzone",
+    "trading-indicator"
+  ],
+  "type": "module",
+  "scripts": {
+    "test": "node tests.mjs"
+  },
+  "devDependencies": {
+    "pinets": "^0.9.33"
+  }
+}

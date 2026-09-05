@@ -1,0 +1,116 @@
+// TradingView Pine Script V5 Indicator to mark the latest important levels
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © tc3oliver
+
+//@version=5
+indicator("Session Highs and Lows Indicator (SMC Sessions, DST-safe)", overlay=true)
+
+// Session windows are meaningless once one candle spans the whole day —
+// without this guard the script silently draws wrong levels on 1D and above.
+if not timeframe.isintraday and barstate.islast
+    runtime.error("This indicator requires an intraday timeframe (< 1D).")
+
+// ======== Visibility toggles ========
+showLondon       = input.bool(true, "Show London High/Low")
+showNewYork      = input.bool(true, "Show New York High/Low")
+showAsia         = input.bool(true, "Show Asia High/Low")
+showNewYorkClose = input.bool(true, "Show New York Close High/Low")
+
+// ======== Line styling ========
+londonColor   = input.color(color.new(#47abfd, 70), "London Line Color")
+londonWidth   = input.int(1, "London Line Width", minval=1, maxval=5)
+
+newYorkColor  = input.color(color.new(#ff6565, 70), "New York Line Color")
+newYorkWidth  = input.int(1, "New York Line Width", minval=1, maxval=5)
+
+nyCloseColor  = input.color(color.new(#ff9f43, 70), "NY Close Line Color")
+nyCloseWidth  = input.int(1, "NY Close Line Width", minval=1, maxval=5)
+
+asiaColor     = input.color(color.new(#75ff79, 70), "Asia Line Color")
+asiaWidth     = input.int(1, "Asia Line Width", minval=1, maxval=5)
+
+// --- SMC/ICT Sessions in New York time (DST-safe via America/New_York) ---
+asianRangeSession = input.session("2000-0000", "Asian Range [NY time]")
+londonSession     = input.session("0300-0500", "London Open [NY time]")
+newYorkSession    = input.session("0830-1100", "New York AM [NY time]")
+nyCloseSession    = input.session("1000-1200", "London Close Killzone (NY time)")
+
+TZ = "America/New_York"
+
+// ======== High/low tracking for a single session ========
+// A function-local `var` holds independent state per call site, so all four
+// sessions share this one implementation. Deliberately not an array or UDT:
+// container rollback on realtime bars is a known source of repainting.
+// Must be called unconditionally on every bar or the var state desyncs.
+trackSession(sess, show, col, wid, hiTxt, loTxt) =>
+    inSess  = not na(time("", sess, TZ))
+    isStart = inSess and not nz(inSess[1], false)
+    isEnd   = not inSess and nz(inSess[1], false)
+
+    var float hi       = na
+    var float lo       = na
+    var int   hiBar    = na
+    var int   loBar    = na
+    var int   startBar = na
+    var label hiLbl    = na
+    var label loLbl    = na
+    var line  hiLn     = na
+    var line  loLn     = na
+
+    if isStart
+        hi := high
+        lo := low
+        hiBar := bar_index
+        loBar := bar_index
+        startBar := bar_index
+    else if inSess
+        if high > hi
+            hi := high
+            hiBar := bar_index
+        if low < lo
+            lo := low
+            loBar := bar_index
+    else if isEnd and show
+        label.delete(hiLbl)
+        label.delete(loLbl)
+        line.delete(hiLn)
+        line.delete(loLn)
+        hiLbl := label.new(hiBar, hi, hiTxt, yloc=yloc.abovebar, color=col, textcolor=color.white, style=label.style_label_down, size=size.small)
+        loLbl := label.new(loBar, lo, loTxt, yloc=yloc.belowbar, color=col, textcolor=color.white, style=label.style_label_up,   size=size.small)
+        hiLn := line.new(startBar, hi, bar_index, hi, xloc.bar_index, extend=extend.right, color=col, width=wid, style=line.style_dashed)
+        loLn := line.new(startBar, lo, bar_index, lo, xloc.bar_index, extend=extend.right, color=col, width=wid, style=line.style_dashed)
+
+    [hi, lo, hiBar, loBar]
+
+// ======== The four sessions ========
+[londonHigh, londonLow, londonHighBar, londonLowBar] =
+  trackSession(londonSession, showLondon, londonColor, londonWidth, "London Killzone High", "London Killzone Low")
+
+[newYorkHigh, newYorkLow, newYorkHighBar, newYorkLowBar] =
+  trackSession(newYorkSession, showNewYork, newYorkColor, newYorkWidth, "New York AM Killzone High", "New York AM Killzone Low")
+
+// Asian Range: NY 20:00–24:00
+[asiaHigh, asiaLow, asiaHighBar, asiaLowBar] =
+  trackSession(asianRangeSession, showAsia, asiaColor, asiaWidth, "Asian Range High", "Asian Range Low")
+
+[newYorkCloseHigh, newYorkCloseLow, newYorkCloseHighBar, newYorkCloseLowBar] =
+  trackSession(nyCloseSession, showNewYorkClose, nyCloseColor, nyCloseWidth, "London Close Killzone High", "London Close Killzone Low")
+
+// ======== Test hooks — hidden from the chart and the Data Window ========
+// Read by tests.mjs to reconcile against independently computed ground truth.
+plot(londonHigh,           "london_hi",       display=display.none)
+plot(londonLow,            "london_lo",       display=display.none)
+plot(londonHighBar,        "london_hiBar",    display=display.none)
+plot(londonLowBar,         "london_loBar",    display=display.none)
+plot(newYorkHigh,          "newYork_hi",      display=display.none)
+plot(newYorkLow,           "newYork_lo",      display=display.none)
+plot(newYorkHighBar,       "newYork_hiBar",   display=display.none)
+plot(newYorkLowBar,        "newYork_loBar",   display=display.none)
+plot(asiaHigh,             "asia_hi",         display=display.none)
+plot(asiaLow,              "asia_lo",         display=display.none)
+plot(asiaHighBar,          "asia_hiBar",      display=display.none)
+plot(asiaLowBar,           "asia_loBar",      display=display.none)
+plot(newYorkCloseHigh,     "nyClose_hi",      display=display.none)
+plot(newYorkCloseLow,      "nyClose_lo",      display=display.none)
+plot(newYorkCloseHighBar,  "nyClose_hiBar",   display=display.none)
+plot(newYorkCloseLowBar,   "nyClose_loBar",   display=display.none)

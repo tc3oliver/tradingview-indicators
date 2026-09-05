@@ -1,0 +1,197 @@
+// TradingView Pine Script V5 Indicator to mark the latest important levels
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © tc3oliver
+
+//@version=5
+indicator("Session Highs and Lows Indicator (SMC Sessions, DST-safe)", overlay=true)
+
+// Session 判斷在日線以上沒有意義（一根 K 涵蓋整天），會靜默畫出錯誤的線
+if not timeframe.isintraday and barstate.islast
+    runtime.error("This indicator requires an intraday timeframe (< 1D).")
+
+// ======== 顯示開關 ========
+showLondon       = input.bool(true, "Show London High/Low")
+showNewYork      = input.bool(true, "Show New York High/Low")
+showAsia         = input.bool(true, "Show Asia High/Low")
+showNewYorkClose = input.bool(true, "Show New York Close High/Low")
+
+// ======== 線條樣式設定 ========
+londonColor   = input.color(color.new(#47abfd, 70), "London Line Color")
+londonWidth   = input.int(1, "London Line Width", minval=1, maxval=5)
+
+newYorkColor  = input.color(color.new(#ff6565, 70), "New York Line Color")
+newYorkWidth  = input.int(1, "New York Line Width", minval=1, maxval=5)
+
+nyCloseColor  = input.color(color.new(#ff9f43, 70), "NY Close Line Color")
+nyCloseWidth  = input.int(1, "NY Close Line Width", minval=1, maxval=5)
+
+asiaColor     = input.color(color.new(#75ff79, 70), "Asia Line Color")
+asiaWidth     = input.int(1, "Asia Line Width", minval=1, maxval=5)
+
+
+// --- SMC/ICT Sessions in New York time (DST-safe via America/New_York) ---
+asianRangeSession = input.session("2000-0000", "Asian Range [NY time]")
+londonSession     = input.session("0300-0500", "London Open [NY time]")
+newYorkSession    = input.session("0830-1100", "New York AM [NY time]")
+nyCloseSession    = input.session("1000-1200", "London Close Killzone (NY time)")
+
+// 是否在各時段內（以 New York 時區判斷，DST 自動處理）
+inAsiaSession         = not na(time("", asianRangeSession, "America/New_York"))
+inLondonSession       = not na(time("", londonSession,     "America/New_York"))
+inNewYorkSession      = not na(time("", newYorkSession,    "America/New_York"))
+inNewYorkCloseSession = not na(time("", nyCloseSession,    "America/New_York"))
+
+// Session 切換判斷（用 nz 防第一根 na）
+isLondonSessionStart        =  inLondonSession and not nz(inLondonSession[1], false)
+isLondonSessionEnd          = not inLondonSession and     nz(inLondonSession[1], false)
+
+isNewYorkSessionStart       =  inNewYorkSession and not nz(inNewYorkSession[1], false)
+isNewYorkSessionEnd         = not inNewYorkSession and     nz(inNewYorkSession[1], false)
+
+isAsiaSessionStart          =  inAsiaSession and not nz(inAsiaSession[1], false)
+isAsiaSessionEnd            = not inAsiaSession and     nz(inAsiaSession[1], false)
+
+isNewYorkCloseSessionStart  =  inNewYorkCloseSession and not nz(inNewYorkCloseSession[1], false)
+isNewYorkCloseSessionEnd    = not inNewYorkCloseSession and     nz(inNewYorkCloseSession[1], false)
+
+
+// ======== 初始化變數 ========
+var float londonHigh = na
+var float londonLow = na
+var int londonHighBar = na
+var int londonLowBar = na
+var int londonStartBar = na
+
+var float newYorkHigh = na
+var float newYorkLow = na
+var int newYorkHighBar = na
+var int newYorkLowBar = na
+var int newYorkStartBar = na
+
+var float asiaHigh = na
+var float asiaLow = na
+var int asiaHighBar = na
+var int asiaLowBar = na
+var int asiaStartBar = na
+
+var float newYorkCloseHigh = na
+var float newYorkCloseLow = na
+var int newYorkCloseHighBar = na
+var int newYorkCloseLowBar = na
+var int newYorkCloseStartBar = na
+
+var label londonHighLabel = na
+var label londonLowLabel = na
+var line londonHighLine = na
+var line londonLowLine = na
+
+var label newYorkHighLabel = na
+var label newYorkLowLabel = na
+var line newYorkHighLine = na
+var line newYorkLowLine = na
+
+var label asiaHighLabel = na
+var label asiaLowLabel = na
+var line asiaHighLine = na
+var line asiaLowLine = na
+
+var label newYorkCloseHighLabel = na
+var label newYorkCloseLowLabel = na
+var line newYorkCloseHighLine = na
+var line newYorkCloseLowLine = na
+
+// ======== 更新倫敦 ========
+if isLondonSessionStart
+    londonHigh := high
+    londonLow := low
+    londonHighBar := bar_index
+    londonLowBar := bar_index
+    londonStartBar := bar_index
+else if inLondonSession
+    if high > londonHigh
+        londonHigh := high
+        londonHighBar := bar_index
+    if low < londonLow
+        londonLow := low
+        londonLowBar := bar_index
+else if isLondonSessionEnd and showLondon
+    label.delete(londonHighLabel)
+    label.delete(londonLowLabel)
+    line.delete(londonHighLine)
+    line.delete(londonLowLine)
+    londonHighLabel := label.new(londonHighBar, londonHigh, "London Killzone High", yloc=yloc.abovebar, color=londonColor, textcolor=color.white, style=label.style_label_down, size=size.small)
+    londonLowLabel  := label.new(londonLowBar,  londonLow,  "London Killzone Low",  yloc=yloc.belowbar, color=londonColor, textcolor=color.white, style=label.style_label_up,   size=size.small)
+    londonHighLine := line.new(londonStartBar, londonHigh, bar_index, londonHigh, xloc.bar_index, extend=extend.right, color=londonColor, width=londonWidth, style=line.style_dashed)
+    londonLowLine := line.new(londonStartBar, londonLow, bar_index, londonLow, xloc.bar_index, extend=extend.right, color=londonColor, width=londonWidth, style=line.style_dashed)
+
+// ======== 更新紐約 ========
+if isNewYorkSessionStart
+    newYorkHigh := high
+    newYorkLow := low
+    newYorkHighBar := bar_index
+    newYorkLowBar := bar_index
+    newYorkStartBar := bar_index
+else if inNewYorkSession
+    if high > newYorkHigh
+        newYorkHigh := high
+        newYorkHighBar := bar_index
+    if low < newYorkLow
+        newYorkLow := low
+        newYorkLowBar := bar_index
+else if isNewYorkSessionEnd and showNewYork
+    label.delete(newYorkHighLabel)
+    label.delete(newYorkLowLabel)
+    line.delete(newYorkHighLine)
+    line.delete(newYorkLowLine)
+    newYorkHighLabel := label.new(newYorkHighBar, newYorkHigh, "New York AM Killzone High", yloc=yloc.abovebar, color=newYorkColor, textcolor=color.white, style=label.style_label_down, size=size.small)
+    newYorkLowLabel  := label.new(newYorkLowBar,  newYorkLow,  "New York AM Killzone Low",  yloc=yloc.belowbar, color=newYorkColor, textcolor=color.white, style=label.style_label_up,   size=size.small)
+    newYorkHighLine := line.new(newYorkStartBar, newYorkHigh, bar_index, newYorkHigh, xloc.bar_index, extend=extend.right, color=newYorkColor, width=newYorkWidth, style=line.style_dashed)
+    newYorkLowLine := line.new(newYorkStartBar, newYorkLow, bar_index, newYorkLow, xloc.bar_index, extend=extend.right, color=newYorkColor, width=newYorkWidth, style=line.style_dashed)
+
+// ======== 更新亞洲（Asian Range, NY 20:00–24:00） ========
+if isAsiaSessionStart
+    asiaHigh := high
+    asiaLow := low
+    asiaHighBar := bar_index
+    asiaLowBar := bar_index
+    asiaStartBar := bar_index
+else if inAsiaSession
+    if high > asiaHigh
+        asiaHigh := high
+        asiaHighBar := bar_index
+    if low < asiaLow
+        asiaLow := low
+        asiaLowBar := bar_index
+else if isAsiaSessionEnd and showAsia
+    label.delete(asiaHighLabel)
+    label.delete(asiaLowLabel)
+    line.delete(asiaHighLine)
+    line.delete(asiaLowLine)
+    asiaHighLabel := label.new(asiaHighBar, asiaHigh, "Asian Range High", yloc=yloc.abovebar, color=asiaColor, textcolor=color.white, style=label.style_label_down, size=size.small)
+    asiaLowLabel  := label.new(asiaLowBar,  asiaLow,  "Asian Range Low",  yloc=yloc.belowbar, color=asiaColor, textcolor=color.white, style=label.style_label_up,   size=size.small)
+    asiaHighLine := line.new(asiaStartBar, asiaHigh, bar_index, asiaHigh, xloc.bar_index, extend=extend.right, color=asiaColor, width=asiaWidth, style=line.style_dashed)
+    asiaLowLine := line.new(asiaStartBar, asiaLow, bar_index, asiaLow, xloc.bar_index, extend=extend.right, color=asiaColor, width=asiaWidth, style=line.style_dashed)
+
+// ======== 更新紐約收盤 ========
+if isNewYorkCloseSessionStart
+    newYorkCloseHigh := high
+    newYorkCloseLow := low
+    newYorkCloseHighBar := bar_index
+    newYorkCloseLowBar := bar_index
+    newYorkCloseStartBar := bar_index
+else if inNewYorkCloseSession
+    if high > newYorkCloseHigh
+        newYorkCloseHigh := high
+        newYorkCloseHighBar := bar_index
+    if low < newYorkCloseLow
+        newYorkCloseLow := low
+        newYorkCloseLowBar := bar_index
+else if isNewYorkCloseSessionEnd and showNewYorkClose
+    label.delete(newYorkCloseHighLabel)
+    label.delete(newYorkCloseLowLabel)
+    line.delete(newYorkCloseHighLine)
+    line.delete(newYorkCloseLowLine)
+    newYorkCloseHighLabel := label.new(newYorkCloseHighBar, newYorkCloseHigh, "London Close Killzone High", yloc=yloc.abovebar, color=nyCloseColor, textcolor=color.white, style=label.style_label_down, size=size.small)
+    newYorkCloseLowLabel  := label.new(newYorkCloseLowBar,  newYorkCloseLow,  "London Close Killzone Low",  yloc=yloc.belowbar, color=nyCloseColor, textcolor=color.white, style=label.style_label_up,   size=size.small)
+    newYorkCloseHighLine := line.new(newYorkCloseStartBar, newYorkCloseHigh, bar_index, newYorkCloseHigh, xloc.bar_index, extend=extend.right, color=nyCloseColor, width=nyCloseWidth, style=line.style_dashed)
+    newYorkCloseLowLine := line.new(newYorkCloseStartBar, newYorkCloseLow, bar_index, newYorkCloseLow, xloc.bar_index, extend=extend.right, color=nyCloseColor, width=nyCloseWidth, style=line.style_dashed)
