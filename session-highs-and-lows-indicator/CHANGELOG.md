@@ -3,6 +3,13 @@
 An archive of this script's TradingView release notes. Each dated entry is
 paste-ready for TradingView's release notes field.
 
+> **Do not add links.** TradingView's script publishing rules ban links *and
+> plain-text references to any website* from descriptions, source code and
+> release notes alike. The only place an external link is permitted is the
+> Signature profile field, which requires a Premium/Expert/Ultimate plan.
+> The Mozilla license URL in `main.pine` is exempt — it is TradingView's own
+> default header template.
+
 ---
 
 ## 2026-09-05 — Naming fixes, timeframe warnings
@@ -41,11 +48,6 @@ current timeframe instead of silently showing nothing.
 - **Every session high and low is identical to the previous version**, verified
   bar by bar against the 2025-08-22 release. This update changes naming, adds
   warnings, and cleans up the code internally — it does not move a single level.
-
-### Now open source
-
-Full source, documentation and an offline test suite:
-https://github.com/tc3oliver/tradingview-indicators
 
 ---
 
