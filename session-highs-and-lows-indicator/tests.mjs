@@ -176,10 +176,34 @@ for (const [name, cfg] of Object.entries(SESSIONS)) {
 console.log(`4. weekend-gap   : ${fail.length > before3 ? '❌' : '✅'} correct across simulated Fri17:00→Sun17:00 close (${bars.length - gapped.length} bars removed)`);
 gapStale.forEach((s) => console.log(`                   ${s}`));
 
+// ---------- 5. coarse-timeframe warning ----------
+// A session only registers if some bar OPENS inside its window. On 3h/4h a
+// 2-hour window can contain zero bar opens and the session silently never
+// fires. Every enabled session that never fires must say so on the chart.
+const before4 = fail.length;
+const COLORS = { london: '#47abfd', newYork: '#ff6565', asia: '#75ff79', nyClose: '#ff9f43' };
+const noGuard = NEW.replace(/if not timeframe\.isintraday[\s\S]*?runtime\.error\([^\n]*\n/, '');
+const coarse = [];
+for (const tf of ['1h', '3h', '4h']) {
+  const c = await new PineTS(Provider.Binance, 'BTCUSDT', tf, 400).run(noGuard);
+  const drawn = c.plots.__lines__.data.at(-1)?.value ?? [];
+  const warns = (c.plots.__labels__.data.at(-1)?.value ?? []).filter((l) => String(l.text).startsWith('⚠'));
+  const silent = Object.entries(COLORS).filter(([, col]) => !drawn.some((l) => l.color.toLowerCase().startsWith(col)));
+  check(warns.length === silent.length,
+    `warning ${tf}: ${silent.length} session(s) never fired (${silent.map(([k]) => k).join(',') || 'none'}) but ${warns.length} warning(s) shown`);
+  for (const [k] of silent) {
+    check(warns.some((w) => String(w.text).includes(k === 'nyClose' ? 'London Close' : k === 'newYork' ? 'New York AM' : k === 'london' ? 'London Open' : 'Asian Range')),
+      `warning ${tf}: session ${k} never fired but is not named in any warning`);
+  }
+  coarse.push(`${tf}: ${silent.length} silent → ${warns.length} warned`);
+}
+console.log(`5. coarse-tf-warn: ${fail.length > before4 ? '❌' : '✅'} every silent session is reported on the chart`);
+coarse.forEach((s) => console.log(`                   ${s}`));
+
 console.log(`\n${TF} x${n}`);
 if (fail.length) {
   console.log(`\n❌ ${fail.length} failures:`);
   fail.slice(0, 15).forEach((f) => console.log('  ', f));
   process.exit(1);
 }
-console.log('\n✅ all 4 test groups passed');
+console.log('\n✅ all 5 test groups passed');

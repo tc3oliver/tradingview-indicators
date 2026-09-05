@@ -11,6 +11,20 @@ An archive of this script's TradingView release notes. Each entry below the
 coordinate is bit-identical to the previous version, verified bar-by-bar by an
 automated differential test.
 
+### Fixed
+
+- **Input names now match the chart labels.** The toggle read *"Show New York
+  Close High/Low"* while the levels it controlled were labelled *"London Close
+  Killzone"* — a leftover from the 2025-08-22 rename. Checking the box looked like
+  it did nothing, or like it drew the wrong session. All four toggles and their
+  color/width inputs now use the killzone names shown on the chart: London Open,
+  New York AM, Asian Range, London Close.
+- **Sessions that never fire are now reported.** A session only registers if some
+  bar *opens* inside its window. On a 4h chart a 2-hour window can contain zero bar
+  opens, so the session silently never drew anything. An orange warning label now
+  appears on the last bar naming the session and the timeframe. Which sessions are
+  affected depends on the timeframe *and* on daylight saving; use 30m or lower.
+
 ### Added
 
 - **Intraday guard.** The indicator now raises a clear error instead of silently
@@ -32,6 +46,9 @@ automated differential test.
   container rollback behaviour on realtime bars.
 - Corrected a stale comment that described the Asia session as Taipei
   07:00–16:00; it has been NY 20:00–24:00 since the 2025-08-22 release.
+- Session labels are now derived from a single name per session rather than two
+  hand-written strings, so the toggle, the color input and the chart label cannot
+  drift apart again.
 
 ### Removed
 

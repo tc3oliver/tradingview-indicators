@@ -11,23 +11,24 @@ if not timeframe.isintraday and barstate.islast
     runtime.error("This indicator requires an intraday timeframe (< 1D).")
 
 // ======== Visibility toggles ========
-showLondon       = input.bool(true, "Show London High/Low")
-showNewYork      = input.bool(true, "Show New York High/Low")
-showAsia         = input.bool(true, "Show Asia High/Low")
-showNewYorkClose = input.bool(true, "Show New York Close High/Low")
+// Names must match the killzone names used on the chart labels below.
+showLondon       = input.bool(true, "Show London Open Killzone")
+showNewYork      = input.bool(true, "Show New York AM Killzone")
+showAsia         = input.bool(true, "Show Asian Range")
+showNewYorkClose = input.bool(true, "Show London Close Killzone")
 
 // ======== Line styling ========
-londonColor   = input.color(color.new(#47abfd, 70), "London Line Color")
-londonWidth   = input.int(1, "London Line Width", minval=1, maxval=5)
+londonColor   = input.color(color.new(#47abfd, 70), "London Open Line Color")
+londonWidth   = input.int(1, "London Open Line Width", minval=1, maxval=5)
 
-newYorkColor  = input.color(color.new(#ff6565, 70), "New York Line Color")
-newYorkWidth  = input.int(1, "New York Line Width", minval=1, maxval=5)
+newYorkColor  = input.color(color.new(#ff6565, 70), "New York AM Line Color")
+newYorkWidth  = input.int(1, "New York AM Line Width", minval=1, maxval=5)
 
-nyCloseColor  = input.color(color.new(#ff9f43, 70), "NY Close Line Color")
-nyCloseWidth  = input.int(1, "NY Close Line Width", minval=1, maxval=5)
+nyCloseColor  = input.color(color.new(#ff9f43, 70), "London Close Line Color")
+nyCloseWidth  = input.int(1, "London Close Line Width", minval=1, maxval=5)
 
-asiaColor     = input.color(color.new(#75ff79, 70), "Asia Line Color")
-asiaWidth     = input.int(1, "Asia Line Width", minval=1, maxval=5)
+asiaColor     = input.color(color.new(#75ff79, 70), "Asian Range Line Color")
+asiaWidth     = input.int(1, "Asian Range Line Width", minval=1, maxval=5)
 
 // --- SMC/ICT Sessions in New York time (DST-safe via America/New_York) ---
 asianRangeSession = input.session("2000-0000", "Asian Range [NY time]")
@@ -42,7 +43,7 @@ TZ = "America/New_York"
 // sessions share this one implementation. Deliberately not an array or UDT:
 // container rollback on realtime bars is a known source of repainting.
 // Must be called unconditionally on every bar or the var state desyncs.
-trackSession(sess, show, col, wid, hiTxt, loTxt) =>
+trackSession(sess, show, col, wid, name) =>
     inSess  = not na(time("", sess, TZ))
     isStart = inSess and not nz(inSess[1], false)
     isEnd   = not inSess and nz(inSess[1], false)
@@ -56,6 +57,7 @@ trackSession(sess, show, col, wid, hiTxt, loTxt) =>
     var label loLbl    = na
     var line  hiLn     = na
     var line  loLn     = na
+    var label warnLbl  = na
 
     if isStart
         hi := high
@@ -75,26 +77,36 @@ trackSession(sess, show, col, wid, hiTxt, loTxt) =>
         label.delete(loLbl)
         line.delete(hiLn)
         line.delete(loLn)
-        hiLbl := label.new(hiBar, hi, hiTxt, yloc=yloc.abovebar, color=col, textcolor=color.white, style=label.style_label_down, size=size.small)
-        loLbl := label.new(loBar, lo, loTxt, yloc=yloc.belowbar, color=col, textcolor=color.white, style=label.style_label_up,   size=size.small)
+        hiLbl := label.new(hiBar, hi, name + " High", yloc=yloc.abovebar, color=col, textcolor=color.white, style=label.style_label_down, size=size.small)
+        loLbl := label.new(loBar, lo, name + " Low",  yloc=yloc.belowbar, color=col, textcolor=color.white, style=label.style_label_up,   size=size.small)
         hiLn := line.new(startBar, hi, bar_index, hi, xloc.bar_index, extend=extend.right, color=col, width=wid, style=line.style_dashed)
         loLn := line.new(startBar, lo, bar_index, lo, xloc.bar_index, extend=extend.right, color=col, width=wid, style=line.style_dashed)
+
+    // A session window only registers if some bar OPENS inside it. On coarse
+    // timeframes (3h/4h) a 2-hour window can contain zero bar opens, and the
+    // session silently never fires — which reads as "the toggle does nothing".
+    // Which sessions are affected shifts with DST, so say so explicitly.
+    // `barstate.islast` is true on every bar while it is forming, and the label
+    // is committed when that bar closes — so it must be deleted before redrawing
+    // or one warning label accumulates per bar.
+    if barstate.islast and show and na(hi)
+        label.delete(warnLbl)
+        warnLbl := label.new(bar_index, close, "⚠ " + name + ": no bar opens inside this session on the " + timeframe.period + "-minute timeframe. Use 1h or lower.", yloc=yloc.price, color=color.orange, textcolor=color.white, style=label.style_label_left, size=size.small)
 
     [hi, lo, hiBar, loBar]
 
 // ======== The four sessions ========
 [londonHigh, londonLow, londonHighBar, londonLowBar] =
-  trackSession(londonSession, showLondon, londonColor, londonWidth, "London Killzone High", "London Killzone Low")
+  trackSession(londonSession, showLondon, londonColor, londonWidth, "London Open Killzone")
 
 [newYorkHigh, newYorkLow, newYorkHighBar, newYorkLowBar] =
-  trackSession(newYorkSession, showNewYork, newYorkColor, newYorkWidth, "New York AM Killzone High", "New York AM Killzone Low")
+  trackSession(newYorkSession, showNewYork, newYorkColor, newYorkWidth, "New York AM Killzone")
 
-// Asian Range: NY 20:00–24:00
 [asiaHigh, asiaLow, asiaHighBar, asiaLowBar] =
-  trackSession(asianRangeSession, showAsia, asiaColor, asiaWidth, "Asian Range High", "Asian Range Low")
+  trackSession(asianRangeSession, showAsia, asiaColor, asiaWidth, "Asian Range")
 
 [newYorkCloseHigh, newYorkCloseLow, newYorkCloseHighBar, newYorkCloseLowBar] =
-  trackSession(nyCloseSession, showNewYorkClose, nyCloseColor, nyCloseWidth, "London Close Killzone High", "London Close Killzone Low")
+  trackSession(nyCloseSession, showNewYorkClose, nyCloseColor, nyCloseWidth, "London Close Killzone")
 
 // ======== Test hooks — hidden from the chart and the Data Window ========
 // Read by tests.mjs to reconcile against independently computed ground truth.

@@ -72,6 +72,40 @@ is in which day the session is attributed to.**
 Copy the contents of [`main.pine`](./main.pine) into TradingView's Pine Editor and
 click *Add to chart*.
 
+### Timeframe matters — use 30m or lower
+
+A session only registers if some bar **opens** inside its window. A 2-hour window
+on a 4-hour chart can contain zero bar opens, in which case the session never fires
+and nothing is ever drawn for it. Which sessions break depends on both the
+timeframe and daylight saving:
+
+| Timeframe | London Open | New York AM | Asian Range | London Close |
+|---|---|---|---|---|
+| 15m / 30m | ✅ | ✅ | ✅ | ✅ |
+| 1h | ✅ | ⚠️ starts 09:00 | ✅ | ✅ |
+| 2h | ✅ | ⚠️ 1 bar only | ✅ | ✅ |
+| 3h | ❌ in summer | ❌ in summer | ✅ | ✅ |
+| 4h | ✅ | ❌ | ✅ | ❌ in summer |
+
+Two things to note:
+
+- **Sessions that never fire now say so.** An orange warning label appears on the
+  last bar naming the session and the timeframe, instead of the toggle appearing
+  to do nothing.
+- **New York AM starts at 08:30, which no hourly bar aligns to.** On a 1h chart
+  the first bar inside the window opens at 09:00, so the level is really the
+  09:00–11:00 range, not 08:30–11:00. No warning is shown for this because the
+  session does fire — it is just measuring less than it claims. **Use 30m or lower
+  if the 08:30–09:00 half hour matters to you.**
+
+You do **not** need to edit the session times to work around this. The defaults are
+the standard ICT/SMC killzone definitions; narrowing them to fit coarse bars would
+silently redefine what the indicator measures. Change the timeframe, not the
+session. (The session inputs are still there if your strategy genuinely uses
+different windows — and the warning label covers custom windows too.)
+
+### Daily and above
+
 **An intraday timeframe (< 1D) is required.** Session windows are meaningless once
 a single candle spans the whole day, so the indicator raises an error rather than
 silently drawing wrong levels:
