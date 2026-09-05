@@ -39,9 +39,9 @@ current timeframe instead of silently showing nothing.
   appeared. The indicator now says so on the chart, naming the session and the
   timeframe. Which sessions are affected also shifts with daylight saving.
 
-  **Use 30m or lower for all four killzones to work correctly.** Note that New
-  York AM starts at 08:30, which no hourly bar aligns to — on a 1h chart that
-  level is really the 09:00–11:00 range, not 08:30–11:00.
+  **Use 2h or lower for all four killzones to fire at all, and 30m or lower for
+  full accuracy.** New York AM starts at 08:30, which no hourly bar aligns to —
+  on a 1h chart that level is really the 09:00–11:00 range, not 08:30–11:00.
 
 - **An explicit error on daily and higher timeframes.** Session windows are
   meaningless once a single candle spans the whole day. The indicator now refuses
