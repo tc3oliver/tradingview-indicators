@@ -13,7 +13,7 @@ It does not tell you what will happen next, and it does not suggest what to do.
 
 > ### Status: CORE READY FOR MANUAL VALIDATION
 >
-> **Not ready for normal use.** 25 offline checks prove the logic is
+> **Not ready for normal use.** 27 offline checks prove the logic is
 > self-consistent and says true things about the data it was given. They cannot
 > prove the script compiles on TradingView, that any symbol resolves, or that a
 > single number on the chart is what it claims. Core acceptance is **A1–A5,
@@ -65,8 +65,14 @@ So this is a monitor. Everything it says is a description of a measurement.
 This is the rule the whole of v3 is built on, and the bug that made v3
 necessary.
 
-> **The RAW value decides WHAT HAPPENED.**
-> **The PERCENTILE decides HOW UNUSUAL IT IS.**
+> **RAW VALUE** → direction. What happened. Nothing else decides it.
+> **Z-SCORE** → state intensity, through the hysteresis ladder.
+> NORMAL / UNUSUAL / EXTREME. Marked **[σ]** on the dashboard.
+> **PERCENTILE** → historical rarity, and the ranking used to order ANOMALIES.
+
+The percentile does not decide the state and never has — the σ ladder does, and
+that is what the smoothing and hysteresis audits measured. Three roles, three
+statistics, and the dashboard marks which one produced the word.
 
 In v2 the two were fused: a state was `sign(z) × |z|`, so the direction word came
 out of a z-score. When the recent mean was strongly negative, an open-interest
@@ -77,10 +83,11 @@ or smoothing fixes it.
 In v3 every label is `<intensity> <direction>` and the two halves come from
 different places:
 
-| axis | source | vocabulary |
+| role | statistic | vocabulary |
 |---|---|---|
-| direction | the sign of the **raw** measurement, nothing else | EXPANSION / REDUCTION, LONG / SHORT FUNDING, INFLOW / OUTFLOW, POSITIVE / NEGATIVE PREMIUM |
-| intensity | the σ ladder with hysteresis on the same window | NORMAL / UNUSUAL / EXTREME (funding: NORMAL / ELEVATED / EXTREME) |
+| direction — what happened | the sign of the **raw** measurement, nothing else | EXPANSION / REDUCTION, LONG / SHORT FUNDING, INFLOW / OUTFLOW, POSITIVE / NEGATIVE PREMIUM |
+| intensity — how far out | the **σ** ladder with hysteresis, marked `[σ]` | NORMAL / UNUSUAL / EXTREME (funding: NORMAL / ELEVATED / EXTREME) |
+| rarity — how often | the **percentile**, shown as `99.4p`; also orders the anomaly list | no words of its own |
 
 Eight invariants are asserted on every bar of the test window
 (`npm test`, check 1):
@@ -112,11 +119,26 @@ FUNDING     +0.1859%  87.8p   +0.91σ    NORMAL
 as a high one — `RELATIVE 2.2p` is a strong perp surge. Anomalies are therefore
 ranked by `max(p, 100−p)`, which makes no normality assumption at all.
 
-**Why the intensity word still comes from σ and not the percentile.** The
-smoothing and hysteresis audits are expressed in σ and were run against σ
-thresholds; rewiring the ladder to percentiles would invalidate them without
-being measured. σ drives the ladder, the percentile is what you read. Both are
-computed over the same window so they always describe the same history.
+**They disagree, and the rate is measured rather than assumed.** Comparing the
+σ ladder against percentile-extremeness tiers over all 13,164 bars:
+
+| measure | tiers disagree | rare (top 2.5%) but state NORMAL | state EXTREME but not rare |
+|---|---|---|---|
+| OI 24H | 20.8% | 0.01% | 0.18% |
+| OI 4H | 12.0% | 0.00% | 0.00% |
+| PREMIUM | 34.6% | **2.88%** | 0.00% |
+| PARTICIP | 6.6% | 0.02% | 0.00% |
+| SPOT RVOL | 27.3% | **2.91%** | 0.00% |
+| PERP RVOL | 26.5% | **2.94%** | 0.00% |
+| **all** | **21.3%** of 78,579 readings | **1.46%** | 0.03% |
+
+A one-in-five disagreement is what you get from two different statistics on a
+non-normal distribution, and it is not a defect. The case that *looks* like a
+bug — `95.0p ... NORMAL [σ]` — happens on about 1.5% of readings, most of it in
+the fat-tailed measures. The `[σ]` marker exists so that row reads as two
+statements rather than one contradiction. Percentile tiers here mirror the
+two-sided σ gates for comparison only; nothing in the indicator uses them, and
+no threshold was changed on the strength of this measurement.
 
 ### Participation is the one measure whose direction is *not* raw
 
@@ -167,7 +189,7 @@ warn you.
 | SPOT / PERP RVOL | is volume unusual against the **same UTC slot** on prior days? | IMPULSE |
 | RELATIVE | is spot or perp unusually active relative to the other? | IMPULSE |
 | PERP / SPOT DELTA | estimated net up-bar vs down-bar volume inside the bar | ESTIMATED |
-| ETF 5D | is five-day US spot ETF flow in or out, and how unusually? | CONTEXT (adapter) |
+| ETF total | is recent US spot ETF flow in or out, and how unusually? The row is named for **what it actually sums** — see §9 | CONTEXT (adapter) |
 | SOPR | are coins moving at a profit or a loss versus their last move? | CONTEXT |
 
 ### REGIME / IMPULSE / CONTEXT
@@ -301,9 +323,34 @@ unproven adapter must not produce readings.
 
 ### What happens to a missing observation
 
-Pine's `ta.*` functions blank an entire window if any value in it is `na`, so a
-gap cannot simply be left as `na`. v3.0 used `nz()`, which substitutes **0**.
-That was wrong twice over, and the second way was serious:
+Three attempts, and the first two were both wrong.
+
+| version | policy | what it actually did |
+|---|---|---|
+| v3.0 | `nz()` → 0 | injected a value the market never produced, **and** let a −100% artefact into the window |
+| v3.1 | carry forward | invented no new number but **weighted the previous observation once per missing bar** |
+| **v3.2** | **skip** | a missing bar contributes nothing: not zero, not a repeat, and it does not occupy a slot |
+
+`[+2%, na, na, −1%]` became `[+2%, +2%, +2%, −1%]` under v3.1, so +2% counted
+three times in the mean, the deviation and the rank. Carry-forward is not
+neutral missing-value handling and it was wrong to describe it as inventing
+nothing. A fixture now pins this exactly: on that pattern the window must report
+**n = 10, not 20**, mean **0.005, not 0.0125**, and z **exactly 1.0**.
+
+The statistics are no longer left to `ta.sma()` / `ta.stdev()`. The Pine
+documentation says *"some built-in functions, such as `ta.sma()`, ignore the
+bars with `na` values"* — note "some", and note that no equivalent statement
+exists for `ta.stdev()`. Pairing a function that skips `na` with one that does
+not would compute the mean and the deviation over two **different** sample sets
+and return a z-score that is subtly wrong rather than `na`. So `validNorm()`
+walks the window itself, in one pass, using Welford's method, and returns the
+z-score, the percentile and the sample count from provably the same samples.
+
+The percentile is defined exactly: **the share of the other valid samples in the
+same window that are ≤ the current value**, so a unique maximum ranks 100 and a
+unique minimum ranks 0. Asserted as an equality, not a bound.
+
+The original v3.0 defect that started all of this:
 
 - On a *change* series, 0 means "no change" — a reading the market never
   produced, injected into the distribution and understating its variance.
@@ -328,23 +375,35 @@ anomalies by roughly 14× and nothing on screen said so. That is precisely the
 failure mode this project exists to avoid: **a plausible-looking display that is
 quietly wrong.**
 
-v3.1 fixes it in three places:
+The fix, in three parts:
 
 1. **Both endpoints must be valid observations.** An observation counts only if
    it is present, positive, base-unit, and timestamped to *this* bar rather than
    carried forward by `request.security()`. A zero tick forms no change at all,
    in either direction.
-2. **No `nz()` anywhere.** Missing values are carried forward from the last
-   *observed* value — which invents nothing — and stay `na` before the first
-   observation, so warm-up is honestly blank instead of anchored to a fake zero.
-3. **One filled series per measure**, built once and shared by the z-score and
-   the percentile, so the two always describe the same history.
+2. **No `nz()` and no carry-forward.** A bar without an observation is skipped.
+   The one exception is the ETF per-bar-increment mode, where a bar with no
+   increment genuinely did contribute zero flow.
+3. **One pass per measure**, producing the z-score, the percentile and the
+   sample count together, so they can never describe different histories.
 
 The contaminated windows are now statistically indistinguishable from the rest
 of the history, and the most extreme value the normalisation source ever sees is
-**−34.5%** — a real four-hour open-interest move — instead of −100%. The v3.0
-formula is kept inside the test suite as a control and must keep showing the
-damage, or the regression test has gone blind.
+**−34.5%** — a real four-hour open-interest move — instead of −100%. Of 13,164
+bars, **13,142 carry a valid 4H open-interest observation**; the other 22 are
+skipped rather than filled. The v3.0 formula is kept inside the test suite as a
+control and must keep showing the damage, or the regression test has gone blind.
+
+**Which feeds are skipped, and which are not.** Skipping is only correct where
+`na` means "no observation". It is applied to open interest, premium,
+participation, both RVOLs, and SOPR — SOPR gets it through its own daily bar
+time, so a new observation is identified exactly rather than guessed from a
+value change. It is **not** available for the funding and liquidation adapters:
+an `input.source()` is never `na`, so if the upstream plot carries a value
+forward, each upstream observation is weighted by however many bars it repeats
+across. That is a real limitation of the transport, stated rather than papered
+over. Only the ETF adapter can escape it, and only under the na-gated
+contract below.
 
 ---
 
@@ -486,8 +545,34 @@ cannot be checked the reading is **withheld rather than computed from a guess**.
 | input | why it exists | what goes wrong without it |
 |---|---|---|
 | **Funding unit** — decimal / percent / basis points | the z-score and percentile are scale-free, but the printed rate is not | the FUNDING row reads `+0.0002%` when the truth is `+0.02%`, and looks entirely plausible |
-| **ETF source shape** — daily value repeated / per-bar increment | ETF flow is published *daily*; a daily plot on a 4H chart is normally carried forward across all six bars of the day | summing 30 bars counts every day **six times**. Verified exactly 6× in check 24 |
+| **ETF source shape** — three options, see below | ETF flow is published *daily*, on US trading days only | summing 30 bars counts every day **six times**; sampling calendar days re-counts Friday across a weekend |
 | **Liquidation pairing** — "both feeds share one source and unit" | `(long − short) / (long + short)` subtracts one feed from the other | two mismatched scales still land inside [−1, +1] and still look like a reading. Check 22 wires a 1,000,000× mismatch and shows 100% of bars landing in range, pinned at −1 |
+
+#### ETF: the row is named after the arithmetic
+
+ETF flow is published **daily, on US trading days only**. What the script can
+compute depends entirely on the shape of your plot, so the row label changes
+with it and the words "ETF 5D" no longer exist anywhere in the source:
+
+| shape you declare | row label | what it sums | can it skip weekends? |
+|---|---|---|---|
+| `na` except on a new observation | **ETF LAST 5 OBS** | the last five bars that carried a figure | **yes** |
+| daily value, repeated within the day | **ETF 5 CAL-DAY** | one sample per calendar day | no — a Friday figure is re-counted on Saturday and Sunday |
+| per-bar increment | **ETF 30-BAR SUM** | thirty 4H increments | n/a |
+
+Only the first is a genuine five-observation total, and it needs a contract your
+source must honour: **plot the figure on one bar per observation and `na` on
+every other bar**, including every bar of a weekend or a market holiday. Under
+that contract the total skips closed sessions, and two consecutive sessions
+reporting the *same* number still count twice — because the gate is the `na`,
+not the value. All three cases are fixtures in check 25.
+
+**The technical limitation, stated plainly:** without the `na` gate there is no
+way through a single `input.source()` to tell a new observation from a repeated
+one. Two consecutive trading days with identical flow are indistinguishable from
+one day carried forward. That is why the other two modes are *not* called
+five-trading-day flow — the label says calendar day or bar sum, which is what
+the arithmetic does.
 
 The pairing declaration defaults to **off**. With it off, LONG LIQ and SHORT LIQ
 still work — each is ranked against its own history, which needs no shared
@@ -544,7 +629,7 @@ cd ../btc-4h-regime-engine/data && node fetch.mjs    # ~2,200 daily OI files, on
 cd ../../btc-4h-market-intelligence
 
 npm install
-npm test                             # 25 checks, 1500 bars
+npm test                             # 27 checks, 1500 bars
 node tests.mjs 6000                  # same suite, longer window
 
 node audit/extract-states.mjs        # run the frozen indicator over 13,164 bars
@@ -563,7 +648,7 @@ node audit/event-log.mjs             # prospective log, from the freeze forward
 | 2 | trend / SOPR signs | the state sign equals the raw deviation's sign on every engaged bar |
 | 3 | participation naming | RELATIVE SURGE follows its own z; `SPOT DOMINANT`/`PERP DOMINANT` are gone from the source |
 | 4 | **percentile correctness** | in [0,100] across 7 series, and ranks correctly against its own window on 103 checked extremes |
-| 5 | percentrank fixture | a strictly rising series ranks 100, a falling one ranks at the floor |
+| 5 | **validNorm fixture** | lifted verbatim out of `main.pine`: a rising series ranks 100 and a falling one 0; and on `[+2%, na, na, −1%]` the two gaps add **no weight** — n = 10 not 20, mean 0.005 not 0.0125, z exactly 1.0 |
 | 6 | **chart-symbol independence** | all 22 radar series bit-identical on a BTC chart and a non-BTC chart |
 | 7 | **exact 4H** | the predicate is 1 at 240 and 0 at 60, and `runtime.error` is wired to it |
 | 8 | **no repaint** | truncating and re-running leaves every past bar identical, including hysteresis levels, direction codes, feed statuses and the event counter |
@@ -582,7 +667,9 @@ node audit/event-log.mjs             # prospective log, from the freeze forward
 | 21 | **zero/missing OI contamination** | the 7 real zero-OI bars of 2024-07 form no change, produce no −100% artefact, and invent no value; σ inflation 1.01× and firing 28.3% inside vs 27.8% outside. The v3.0 formula runs alongside as a control and must keep showing 12.4× inflation and 0.0% firing, or the test has gone blind. Injected zeros cover the path on any dataset |
 | 22 | **liquidation paired-unit contract** | undeclared pairing withholds the balance, its σ and its percentile and prints DATA INCOMPARABLE; a 1,000,000× scale mismatch still lands 100% inside [−1,+1], which is why range is not treated as validity |
 | 23 | **freshness vocabularies do not mix** | adapter rows never say FRESH, timestamped rows never say ACTIVE, and a deliberately constant *live* feed is shown reading LIKELY STALE — the heuristic's false positive, demonstrated not hidden |
-| 24 | **adapter unit contracts** | funding declared in percent changes only the printed rate (exactly 100×) and leaves the z-score bit-identical; a daily-shaped ETF plot summed as increments comes out exactly 6× too large |
+| 24 | **adapter unit contracts** | two funding plots 100× apart with their units correctly declared canonicalise to the identical rate and the identical z; declaring the *wrong* unit moves the printed rate by exactly 100×; a daily-shaped ETF plot summed as increments comes out exactly 6× too large |
+| 25 | **ETF trading-day semantics** | under the na-gated contract the total is exactly the last five observations across weekends and a holiday, and two consecutive sessions reporting the same value still count twice; the forward-filled mode is shown to differ, which is why it is labelled CAL-DAY |
+| 26 | **percentile vs σ disagreement** | measured, not assumed: 21.3% of readings, and 1.46% in the "rare but NORMAL" case that looks like a bug |
 
 The suite also asserts the harness's spot and reference series are genuinely
 different. PineTS strips exchange prefixes, so a chart symbol of `BTCUSDT`
@@ -670,10 +757,19 @@ threshold version) before it declined to write.
   form no change in either direction and never reach the normalisation window.
   v3.0 got this wrong and suppressed 93% of OI anomalies for 30 days after each
   one; §6 has the measurement and check 21 is the regression guard.
-- **Missing values are carried forward, not interpolated or excluded.** Pine's
-  rolling functions cannot skip a bar, so a gap repeats the last observed value.
-  That invents nothing but does mildly deflate variance if gaps are frequent. On
-  this dataset gaps are 12 bars in 13,164.
+- **Missing values are skipped, which shrinks the sample rather than the
+  variance.** A window with gaps is computed from fewer observations, and below
+  45 valid samples (a quarter of the lookback) no reading is produced at all.
+  No interpolation, and no future observation is ever used.
+- **The funding and liquidation adapters cannot skip repeats.** An
+  `input.source()` is never `na`, so if the upstream plot carries a value
+  forward, each observation is weighted by the number of bars it repeats across.
+  Only the ETF adapter has an escape, and only under the na-gated contract.
+- **`ta.sma()` / `ta.stdev()` na behaviour is not relied on.** The docs describe
+  skipping for `ta.sma()` and say nothing about `ta.stdev()`; the statistics are
+  computed explicitly instead, which costs one 180-iteration pass per measure
+  per bar. Whether that is within TradingView's execution-time budget on a long
+  chart is check A6 on the manual list — it cannot be measured offline.
 - **External adapter "staleness" is a heuristic** and is labelled as one. A live
   feed repeating a legitimate value reads LIKELY STALE, and there is no way to
   tell the difference through an `input.source()`.

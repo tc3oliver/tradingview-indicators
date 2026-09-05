@@ -293,20 +293,22 @@ semDetail.forEach(note);
   let outOfRange = 0;
   for (const k of PCT) for (const v of ser(ctx, k)) if (Number.isFinite(v) && (v < 0 || v > 100)) outOfRange++;
 
-  // Order-correctness on real data: when the raw value is the maximum of its own
-  // 180-bar window, the rank must be at the top of the scale, and vice versa.
-  const WIN = 180;
+  // Order-correctness on real data, against validNorm's exact definition: the
+  // rank of the current value among the OTHER valid samples in the same
+  // `zWin`-bar window. A unique maximum must rank exactly 100, a unique minimum
+  // exactly 0 — an exact assertion, not a bound.
+  const WIN = +(RAW.match(/zWin\s*=\s*input\.int\((\d+)/)?.[1] ?? 180);
   const pairs = [['OI 24H', 't_oiChg24', 't_oiP24'], ['OI 4H', 't_oiChg4', 't_oiP4'], ['PREMIUM', 't_premium', 't_premP'], ['PARTICIP', 't_partRaw', 't_partP'], ['SPOT RVOL', 't_rvolSpot', 't_rvolSpotP'], ['PERP RVOL', 't_rvolPerp', 't_rvolPerpP']];
   let orderBad = 0, orderSeen = 0;
   for (const [, rawK, pK] of pairs) {
     const raw = ser(ctx, rawK), p = ser(ctx, pK);
     for (let i = WIN + 60; i < nb; i++) {
       if (!Number.isFinite(p[i])) continue;
-      const w = raw.slice(i - WIN, i + 1);
-      if (w.some((x) => !Number.isFinite(x))) continue;
+      const w = raw.slice(i - WIN + 1, i + 1).filter(Number.isFinite);
+      if (w.length < 45) continue;                       // validNorm's minSamp
       const mx = Math.max(...w), mn = Math.min(...w);
-      if (raw[i] === mx && w.filter((x) => x === mx).length === 1) { orderSeen++; if (p[i] < 100 * (WIN - 1) / WIN) orderBad++; }
-      if (raw[i] === mn && w.filter((x) => x === mn).length === 1) { orderSeen++; if (p[i] > 100 / WIN) orderBad++; }
+      if (raw[i] === mx && w.filter((x) => x === mx).length === 1) { orderSeen++; if (p[i] !== 100) { orderBad++; if (orderBad < 4) fails.push(`pct max ${rawK}@${i}: p=${p[i]} want 100 (n=${w.length})`); } }
+      if (raw[i] === mn && w.filter((x) => x === mn).length === 1) { orderSeen++; if (p[i] !== 0) { orderBad++; if (orderBad < 4) fails.push(`pct min ${rawK}@${i}: p=${p[i]} want 0 (n=${w.length})`); } }
     }
   }
   line(4, check(outOfRange === 0 && orderBad === 0 && orderSeen > 50,
@@ -314,25 +316,60 @@ semDetail.forEach(note);
     `percentiles stay in [0,100] across ${PCT.length} series, and rank correctly against their own window (${orderSeen} window extremes checked, ${orderBad} wrong)`);
 }
 
-// A direct fixture on ta.percentrank itself, since pctOf is a thin wrapper: a
-// strictly rising series must rank 100, a strictly falling one must rank at the
-// floor of the scale.
+// Fixtures on validNorm() itself, lifted verbatim out of main.pine so the thing
+// under test is the shipped function and not a paraphrase of it.
+//
+// The second fixture is the one that matters: [+2%, na, na, -1%]. v3.1 carried
+// the last observation forward, turning it into [+2%, +2%, +2%, -1%] and giving
+// +2% three times the weight in the mean, the deviation and the rank. A skipped
+// bar must contribute nothing at all.
 {
+  // Both functions, lifted together: validNormAt does the work and validNorm is
+  // the same-series wrapper every measure except ETF uses.
+  const fn = RAW.match(/validNorm\(cur, src, len, minN\) =>[\s\S]*?\n    \[z, p, n\]\n/);
+  if (!fn) { fails.push('validNorm()/validNormAt() no longer extractable from main.pine — fix tests.mjs'); process.exit(1); }
   const T0 = 1700000000000 - (1700000000000 % H4);
-  const synth = (f) => Array.from({ length: 120 }, (_, i) => { const c = f(i); return bar(T0 + i * H4, c, c, c, c, 1); });
+  const synth = (n) => Array.from({ length: n }, (_, i) => bar(T0 + i * H4, 1, 1, 1, 1, 1));
   const prov = (s) => new (class extends BaseProvider {
     constructor() { super({ requiresApiKey: false, providerName: 'L' }); }
     getSupportedTimeframes() { return new Set(['240']); }
     async _getMarketDataNative() { return s; }
     async getSymbolInfo(id) { return { ticker: id, name: id, type: 'crypto', currency: 'USDT', basecurrency: 'X', timezone: 'Etc/UTC', minmov: 1, pricescale: 100 }; }
   })();
-  const mini = '//@version=6\nindicator("m")\nplot(ta.percentrank(close, 20), "p", display = display.none)\n';
-  const up = await new PineTS(prov(synth((i) => 100 + i)), 'X', '240', 120).run(mini);
-  const dn = await new PineTS(prov(synth((i) => 1000 - i)), 'X', '240', 120).run(mini);
-  const uv = fin(ser(up, 'p', 120)).slice(25), dv = fin(ser(dn, 'p', 120)).slice(25);
-  line(5, check(uv.length > 50 && uv.every((v) => v === 100) && dv.every((v) => v <= 5),
-    `percentrank fixture: rising max ${Math.min(...uv)}, falling max ${Math.max(...dv)}`),
-    `ta.percentrank fixture — a strictly rising series ranks 100 on all ${uv.length} bars, a strictly falling one ranks at the floor (max ${Math.max(...dv)})`);
+  const mini = (srcExpr, len, minN) => `//@version=6\nindicator("m")\n${fn[0]}\nsrc = ${srcExpr}\n[z, p, n] = validNorm(src, src, ${len}, ${minN})\nplot(z, "z", display = display.none)\nplot(p, "p", display = display.none)\nplot(n, "n", display = display.none)\nplot(src, "s", display = display.none)\n`;
+  const g = (c, k, n) => (c.plots?.[k]?.data ?? []).map((d) => (d && typeof d === 'object' ? d.value : d)).map((v) => (v == null ? NaN : v)).slice(0, n);
+
+  // (a) monotone: a strictly rising series ranks 100, a falling one ranks 0.
+  const up = await new PineTS(prov(synth(120)), 'X', '240', 120).run(mini('bar_index * 1.0', 20, 5));
+  const dn = await new PineTS(prov(synth(120)), 'X', '240', 120).run(mini('-bar_index * 1.0', 20, 5));
+  const upP = g(up, 'p', 120).filter(Number.isFinite).slice(20);
+  const dnP = g(dn, 'p', 120).filter(Number.isFinite).slice(20);
+  const monotone = upP.length > 50 && upP.every((v) => v === 100) && dnP.every((v) => v === 0);
+
+  // (b) THE WEIGHTING FIXTURE. Valid samples are +2% and -1% in equal number;
+  //     every other bar is na. Skipping gives mean 0.005. Carrying forward the
+  //     previous observation across the two gaps gives 0.0125 — the v3.1 bug.
+  const pat = 'bar_index % 4 == 0 ? 0.02 : bar_index % 4 == 3 ? -0.01 : na';
+  const w = await new PineTS(prov(synth(200)), 'X', '240', 200).run(mini(pat, 20, 4));
+  const wz = g(w, 'z', 200), wn = g(w, 'n', 200), ws = g(w, 's', 200);
+  // On a bar carrying +0.02 with a full window: 20 bars hold 5 x 0.02 and
+  // 5 x -0.01, so n = 10, mean = 0.005, sd = 0.015, z = (0.02-0.005)/0.015 = 1.
+  let wBad = 0, wSeen = 0;
+  for (let i = 60; i < 200; i++) {
+    if (ws[i] !== 0.02 || !Number.isFinite(wz[i])) continue;
+    wSeen++;
+    if (wn[i] !== 10) wBad++;                       // gaps must not occupy slots
+    if (Math.abs(wz[i] - 1.0) > 1e-9) wBad++;       // mean 0.005, not 0.0125
+  }
+  // What carry-forward would have produced, computed here so the number the
+  // fixture rejects is explicit rather than implied.
+  const cfMean = (0.02 * 3 + -0.01) / 4;            // 0.0125
+  const skipMean = (0.02 + -0.01) / 2;              // 0.005
+
+  line(5, check(monotone && wSeen > 20 && wBad === 0,
+    `validNorm fixture: monotone ${monotone}, weighting bars ${wSeen}, failures ${wBad}`),
+    `validNorm fixture — a rising series ranks 100 and a falling one 0 (${upP.length} bars); on [+2%, na, na, -1%] the two gaps add NO weight: n = 10 not 20, mean = ${skipMean} not ${cfMean}, z = exactly 1.0 on all ${wSeen} tested bars`);
+  note(`carry-forward (v3.1) would have given mean ${cfMean} and z ${((0.02 - cfMean) / Math.sqrt((3 * (0.02 - cfMean) ** 2 + (-0.01 - cfMean) ** 2) / 4)).toFixed(4)}; the fixture rejects exactly that`);
 }
 
 // ================================================ 3. chart-symbol independence
@@ -694,12 +731,27 @@ semDetail.forEach(note);
   let poison = BASE;
   poison = rewrite(poison, /oiChg4hRaw  = oiObs and oiObs\[1\] \? oiRaw \/ oiRaw\[1\] - 1 : na/,
     'oiChg4hRaw  = not na(oiRaw) and not na(oiRaw[1]) and oiRaw[1] > 0 ? oiRaw / oiRaw[1] - 1 : na', 'poison chg4');
-  poison = rewrite(poison, /oiChg4hFill  = holdLast\(oiChg4hRaw\)/, 'oiChg4hFill  = nz(oiChg4hRaw)', 'poison fill');
+  poison = rewrite(poison, /\[oiZ4U,  oiP4U,  oiN4 \]  = validNorm\(oiChg4hRaw,  oiChg4hRaw,  zWin, minSamp\)/,
+    ['oiP4U = ta.percentrank(nz(oiChg4hRaw), zWin)',
+      'oiN4 = zWin',
+      'oiSdP = ta.stdev(nz(oiChg4hRaw), zWin)',
+      'oiZ4U = oiSdP > 0 ? (nz(oiChg4hRaw) - ta.sma(nz(oiChg4hRaw), zWin)) / oiSdP : 0.0'].join('\n'),
+    'poison normalisation');
+  // The artefact lives in the PRE-MASK series, which the shipped build has no
+  // reason to plot. Expose it on the control only, so "-100% reached the
+  // normalisation input" is asserted directly rather than inferred.
+  poison += '\nplot(oiChg4hRaw, "t_poisonRaw", display = display.none)\n';
   const bad = await zrun(poison);
 
   const obs = zser(fixed, 't_oiObs');
   const c4 = zser(fixed, 't_oiChg4'), c24 = zser(fixed, 't_oiChg24');
-  const fill = zser(fixed, 't_oiFill4'), badFill = zser(bad, 't_oiFill4');
+  // There is no "fill" series any more — the valid-observation series IS the
+  // emitted change, na where there was no observation. The control still has a
+  // fill, because nz() is exactly what it restores.
+  const fill = zser(fixed, 't_oiChg4');
+  // The control's normalisation input is exactly nz(pre-mask), so that is what
+  // its inflation is measured on.
+  const badFill = zser(bad, 't_poisonRaw').map((v) => (Number.isFinite(v) ? v : 0));
   const zf = zser(fixed, 't_oiZ4'), zb = zser(bad, 't_oiZ4');
 
   // (a) every zero bar is refused as an observation
@@ -707,18 +759,21 @@ semDetail.forEach(note);
   // (b) no -100% artefact anywhere, in the displayed change or in the
   //     normalisation source
   const artefact = [...c4, ...c24, ...fill].filter((v) => Number.isFinite(v) && v <= -0.9).length;
-  const badArtefact = badFill.filter((v) => Number.isFinite(v) && v <= -0.9).length;
+  const badArtefact = zser(bad, 't_poisonRaw').filter((v) => Number.isFinite(v) && v <= -0.9).length;
   // (c) both endpoints required: the bar AFTER a zero has no 4H change either
   const afterOK = zAt.every((i) => i + 1 >= zn || !Number.isFinite(c4[i + 1]));
-  // (d) no artificial values. On a bar with an observation the fill IS the
-  //     observation; on a bar without one it repeats the previous fill. Nothing
-  //     else is ever allowed to appear — in particular not a synthetic zero.
-  const close9 = (a, b) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
+  // (d) the window really is walked over valid observations only. The emitted
+  //     sample count must equal the number of finite changes in the same window
+  //     — not the window length, and not the number of non-na after any fill.
+  const W0 = +(RAW.match(/zWin\s*=\s*input\.int\((\d+)/)?.[1] ?? 180);
+  const nEmit = zser(fixed, 't_oiN24');
+  const c24s = zser(fixed, 't_oiChg24');
   let invented = 0;
-  for (let i = 1; i < zn; i++) {
-    if (!Number.isFinite(fill[i])) continue;
-    const ok = Number.isFinite(c4[i]) ? close9(fill[i], c4[i]) : close9(fill[i], fill[i - 1]);
-    if (!ok) invented++;
+  for (let i = W0; i < zn; i++) {
+    if (!Number.isFinite(nEmit[i])) continue;
+    let want = 0;
+    for (let k = 0; k < W0; k++) if (Number.isFinite(c24s[i - k])) want++;
+    if (nEmit[i] !== want) invented++;
   }
 
   // (e) variance inflation and anomaly suppression, inside vs outside the
@@ -726,19 +781,20 @@ semDetail.forEach(note);
   const W = 180;
   const tainted = new Set();
   for (const i of zAt) for (let k = i; k < Math.min(zn, i + W); k++) tainted.add(k);
-  const rollSd = (a, i) => { const w = a.slice(i - W + 1, i + 1).filter(Number.isFinite); if (w.length < W) return NaN; const m = w.reduce((x, y) => x + y, 0) / w.length; return Math.sqrt(w.reduce((x, y) => x + (y - m) ** 2, 0) / w.length); };
+  // sd over the VALID samples in the window, which is what validNorm computes.
+  const rollSd = (a, i, needAll) => { const w = a.slice(i - W + 1, i + 1).filter(Number.isFinite); if (w.length < (needAll ? W : 45)) return NaN; const m = w.reduce((x, y) => x + y, 0) / w.length; return Math.sqrt(w.reduce((x, y) => x + (y - m) ** 2, 0) / w.length); };
   const med = (a) => (a.length ? [...a].sort((x, y) => x - y)[a.length >> 1] : NaN);
-  const stats = (f, z) => {
+  const stats = (f, z, needAll) => {
     const inSd = [], outSd = [], inFire = [], outFire = [];
     for (let i = W; i < zn; i++) {
-      const sdv = rollSd(f, i);
+      const sdv = rollSd(f, i, needAll);
       if (Number.isFinite(sdv)) (tainted.has(i) ? inSd : outSd).push(sdv);
       if (Number.isFinite(z[i])) (tainted.has(i) ? inFire : outFire).push(Math.abs(z[i]) >= 1 ? 1 : 0);
     }
     const rate = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN);
     return { infl: med(inSd) / med(outSd), fireIn: rate(inFire), fireOut: rate(outFire) };
   };
-  const F = stats(fill, zf), B = stats(badFill, zb);
+  const F = stats(fill, zf, false), B = stats(badFill, zb, true);
 
   const inflOK = F.infl < 1.25;
   const supprOK = F.fireIn > F.fireOut * 0.5;
@@ -747,15 +803,15 @@ semDetail.forEach(note);
 
   line(21, check(zAt.length >= 5 && obsAtZero === 0 && artefact === 0 && afterOK && invented === 0
     && inflOK && supprOK && controlBroken,
-    `zero-OI: ${zAt.length} zero bars, ${obsAtZero} still treated as observations, ${artefact} artefacts, after-zero clean ${afterOK}, ${invented} invented values, sd inflation ${F.infl.toFixed(2)}x, firing ${(F.fireIn * 100).toFixed(1)}% vs ${(F.fireOut * 100).toFixed(1)}%, control broken ${controlBroken}`),
-    `zero-OI contamination — ${zAt.length} real zero-OI bars (2024-07 cluster): none forms a change, no -100% artefact reaches the normalisation source, no value is invented, rolling sd inflation ${F.infl.toFixed(2)}x (was ${B.infl.toFixed(2)}x), anomaly firing ${(F.fireIn * 100).toFixed(1)}% inside the affected windows vs ${(F.fireOut * 100).toFixed(1)}% outside (was ${(B.fireIn * 100).toFixed(1)}% vs ${(B.fireOut * 100).toFixed(1)}%)`);
+    `zero-OI: ${zAt.length} zero bars, ${obsAtZero} still treated as observations, ${artefact} artefacts, after-zero clean ${afterOK}, ${invented} sample-count mismatches, sd inflation ${F.infl.toFixed(2)}x, firing ${(F.fireIn * 100).toFixed(1)}% vs ${(F.fireOut * 100).toFixed(1)}%, control broken ${controlBroken}`),
+    `zero-OI contamination — ${zAt.length} real zero-OI bars (2024-07 cluster): none forms a change, no -100% artefact anywhere, the emitted valid-sample count matches the finite observations in every window, rolling sd inflation ${F.infl.toFixed(2)}x (was ${B.infl.toFixed(2)}x), anomaly firing ${(F.fireIn * 100).toFixed(1)}% inside the affected windows vs ${(F.fireOut * 100).toFixed(1)}% outside (was ${(B.fireIn * 100).toFixed(1)}% vs ${(B.fireOut * 100).toFixed(1)}%)`);
   note(`the v3.0 formula is re-run as a control and still shows ${badArtefact} artefacts and ${B.infl.toFixed(1)}x inflation — if that control ever goes quiet this test has gone blind`);
 
   // Injected zeros, so the path is exercised even on a dataset without any.
   const inj = rows.map((r, i) => ([400, 700, 701, 900].includes(i) ? { ...r, oi: 0 } : r));
   const ictx = await new PineTS(makeProvider(buildSeries(inj)), CHART, '240', inj.length).run(BASE);
-  const iObs = ser(ictx, 't_oiObs'), iFill = ser(ictx, 't_oiFill4');
-  const injOK = [400, 700, 701, 900].every((i) => iObs[i] === 0) && iFill.filter((v) => Number.isFinite(v) && v <= -0.9).length === 0;
+  const iObs = ser(ictx, 't_oiObs'), iChg = ser(ictx, 't_oiChg4');
+  const injOK = [400, 700, 701, 900].every((i) => iObs[i] === 0) && iChg.filter((v) => Number.isFinite(v) && v <= -0.9).length === 0;
   check(injOK, 'injected zero-OI bars still produce an observation or an artefact');
   note(`injected zeros at 4 bar positions: refused as observations and produced no artefact — ${injOK ? 'ok' : 'FAILED'}`);
 }
@@ -834,24 +890,33 @@ semDetail.forEach(note);
   // Funding: scale must reach the DISPLAY and nothing else. z and percentile are
   // scale-free, so if they moved, the canonicalisation is wired wrongly.
   const DEF_UNIT = 'Decimal (0.0001 = 0.01%)';
-  const fsrc = (unit) => {
-    const base = wire(enable(BASE, 'funding'), 'Aggregated funding rate',
-      'extFunding = (close - ta.sma(close, 20)) / ta.sma(close, 20) * 0.05');
+  const EXPR = '(close - ta.sma(close, 20)) / ta.sma(close, 20) * 0.05';
+  const fsrc = (unit, expr) => {
+    const base = wire(enable(BASE, 'funding'), 'Aggregated funding rate', `extFunding = ${expr}`);
     return unit === DEF_UNIT ? base
       : rewrite(base, /input\.string\("Decimal \(0\.0001 = 0\.01%\)", "  Funding unit"/,
         `input.string("${unit}", "  Funding unit"`, `funding unit ${unit}`);
   };
-  const dec = await run(rows, { source: fsrc('Decimal (0.0001 = 0.01%)') });
-  const pct = await run(rows, { source: fsrc('Percent (0.01 = 0.01%)') });
-  const rd = ser(dec, 't_fundRaw'), rp = ser(pct, 't_fundRaw');
-  const zd = ser(dec, 't_fundZ'), zp = ser(pct, 't_fundZ');
-  let scaleBad = 0, zBad = 0;
+  // The contract: two plots at DIFFERENT scales, each with its unit declared
+  // correctly, must canonicalise to the same rate and therefore to the same
+  // reading. This is what the unit input is actually for.
+  const dec = await run(rows, { source: fsrc(DEF_UNIT, EXPR) });
+  const pctSame = await run(rows, { source: fsrc('Percent (0.01 = 0.01%)', `(${EXPR}) * 100.0`) });
+  const rd = ser(dec, 't_fundRaw'), rs = ser(pctSame, 't_fundRaw');
+  const zd = ser(dec, 't_fundZ'), zs = ser(pctSame, 't_fundZ');
+  let canonBad = 0, zBad = 0;
   for (let i = 0; i < nb; i++) {
-    if (!Number.isFinite(rd[i]) || !Number.isFinite(rp[i])) continue;
-    if (Math.abs(rp[i] * 100 - rd[i]) > Math.abs(rd[i]) * 1e-9 + 1e-15) scaleBad++;
-    // z is scale-free by construction; allow only float-noise, which is orders
-    // of magnitude below the 100x a mis-wired canonicalisation would produce.
-    if (Number.isFinite(zd[i]) && Number.isFinite(zp[i]) && Math.abs(zd[i] - zp[i]) > 1e-4) zBad++;
+    if (Number.isFinite(rd[i]) && Number.isFinite(rs[i]) && Math.abs(rd[i] - rs[i]) > 1e-12) canonBad++;
+    if (Number.isFinite(zd[i]) && Number.isFinite(zs[i]) && Math.abs(zd[i] - zs[i]) > 1e-9) zBad++;
+  }
+  // And the failure it prevents: declaring the WRONG unit for the same plot
+  // moves the printed rate by exactly 100x.
+  const pctWrong = await run(rows, { source: fsrc('Percent (0.01 = 0.01%)', EXPR) });
+  const rw = ser(pctWrong, 't_fundRaw');
+  let scaleBad = 0;
+  for (let i = 0; i < nb; i++) {
+    if (!Number.isFinite(rd[i]) || !Number.isFinite(rw[i])) continue;
+    if (Math.abs(rw[i] * 100 - rd[i]) > Math.abs(rd[i]) * 1e-9 + 1e-15) scaleBad++;
   }
 
   // ETF: a daily value repeated across all six 4H bars of a day. Summing 30 bars
@@ -881,10 +946,140 @@ semDetail.forEach(note);
     if (Math.abs(ed[i] - want) > 1e-6) dayBad++;
   }
 
-  line(24, check(scaleBad === 0 && zBad === 0 && checked > 100 && sixBad === 0 && dayBad === 0,
-    `adapter contracts: funding scale errors ${scaleBad}, funding z drift ${zBad}, ETF 6x mismatches ${sixBad}/${checked}, ETF daily-sum errors ${dayBad}`),
-    `adapter unit contracts — declaring funding in percent instead of decimal changes only the printed rate (exactly 100x, ${scaleBad} errors) and leaves the z-score bit-identical (${zBad} drifts); a daily-shaped ETF plot summed as per-bar increments comes out exactly 6x too large (${checked} bars checked), which is why the shape is an explicit input`);
+  line(24, check(canonBad === 0 && zBad === 0 && scaleBad === 0 && checked > 100 && sixBad === 0 && dayBad === 0,
+    `adapter contracts: canonical mismatches ${canonBad}, z drift ${zBad}, wrong-unit scale errors ${scaleBad}, ETF 6x mismatches ${sixBad}/${checked}, ETF daily-sum errors ${dayBad}`),
+    `adapter unit contracts — two funding plots 100x apart with their units correctly declared canonicalise to the identical rate (${canonBad} mismatches) and the identical z (${zBad} drifts); declaring the WRONG unit moves the printed rate by exactly 100x (${scaleBad} errors); a daily-shaped ETF plot summed as per-bar increments comes out exactly 6x too large (${checked} bars checked)`);
   note('these are the two ways an adapter can be off by a constant factor while every label still reads plausibly');
+  note('scale-invariance of the z itself is NOT asserted here: PineTS rounds every value to 10 decimals, which destroys a series at 1e-5 magnitudes. That is a harness limit, not a Pine one — TradingView floats are float64 — but it cannot be verified offline, so it is not claimed');
+}
+
+// ============================ 25. ETF five-day semantics, weekends included ===
+// "ETF 5D" was a claim the arithmetic could not support. ETF flow is published
+// on US trading days only; a daily plot carried across a weekend re-counts the
+// Friday session twice more. Three shapes now exist, each with a label that
+// describes what it actually sums, and only one of them can count observations.
+{
+  const T0 = 1700000000000 - (1700000000000 % H4);
+  const N = 400;
+  const synth = Array.from({ length: N }, (_, i) => bar(T0 + i * H4, 1, 1, 1, 1, 1));
+  const prov = () => new (class extends BaseProvider {
+    constructor() { super({ requiresApiKey: false, providerName: 'L' }); }
+    getSupportedTimeframes() { return new Set(['240']); }
+    async _getMarketDataNative() { return synth; }
+    async getSymbolInfo(id) { return { ticker: id, name: id, type: 'crypto', currency: 'USDT', basecurrency: 'X', timezone: 'Etc/UTC', minmov: 1, pricescale: 100 }; }
+  })();
+  const fn = RAW.match(/sumLastValid\(src, k, maxBack\) =>[\s\S]*?\n    got >= k \? s : na\n/);
+  if (!fn) fails.push('sumLastValid() no longer extractable from main.pine');
+
+  // Day d (six 4H bars) carries flow[d]. A closed session carries na under the
+  // na-gated contract, and repeats the previous session under forward fill.
+  //  d%7 == 5,6 -> weekend;  d == 12 -> a US holiday
+  //  d == 20,21 -> two consecutive sessions with the SAME flow value
+  const flowOf = (d) => (d === 20 || d === 21 ? 500.0 : 100.0 + d);
+  const closed = (d) => d % 7 === 5 || d % 7 === 6 || d === 12;
+  // The contract is ONE bar per observation, na everywhere else — including
+  // every bar of a closed session. Anything looser and "last five observations"
+  // would count the same session up to six times.
+  const gated = `d = math.floor(bar_index / 6)\nclosedDay = d % 7 == 5 or d % 7 == 6 or d == 12\nflow = d == 20 or d == 21 ? 500.0 : 100.0 + d\nsrc = closedDay or bar_index % 6 != 0 ? na : flow`;
+  // Forward fill: a closed day repeats the last open session's figure.
+  const filled = `d = math.floor(bar_index / 6)\nvar float held = na\nclosedDay = d % 7 == 5 or d % 7 == 6 or d == 12\nflow = d == 20 or d == 21 ? 500.0 : 100.0 + d\nif not closedDay\n    held := flow\nsrc = held`;
+
+  const mk = (decl, expr) => `//@version=6\nindicator("m")\n${fn[0]}\n${decl}\nplot(${expr}, "v", display = display.none)\nplot(src, "s", display = display.none)\n`;
+  const g = (c, k) => (c.plots?.[k]?.data ?? []).map((d) => (d && typeof d === 'object' ? d.value : d)).map((v) => (v == null ? NaN : v));
+
+  const obs = await new PineTS(prov(), 'X', '240', N).run(mk(gated, 'sumLastValid(src, 5, 90)'));
+  const cal = await new PineTS(prov(), 'X', '240', N).run(mk(filled, 'src + src[6] + src[12] + src[18] + src[24]'));
+  const vObs = g(obs, 'v'), vCal = g(cal, 'v');
+
+  // Expected last-5-observations total, computed independently in JS.
+  const wantObs = (i) => {
+    const out = []; const d0 = Math.floor(i / 6);
+    for (let d = d0; d >= 0 && out.length < 5; d--) if (!closed(d)) out.push(flowOf(d));
+    return out.length === 5 ? out.reduce((a, b) => a + b, 0) : null;
+  };
+  let obsBad = 0, obsSeen = 0;
+  for (let i = 60; i < N; i++) {
+    const w = wantObs(i);
+    if (w === null || !Number.isFinite(vObs[i])) continue;
+    obsSeen++;
+    if (Math.abs(vObs[i] - w) > 1e-9) obsBad++;
+  }
+
+  // (a) Fri -> Sat -> Sun -> Mon. The calendar sample must differ from the
+  //     observation total across the weekend; that difference IS the defect the
+  //     label CAL-DAY exists to disclose.
+  const monBar = 7 * 6 * 3 + 0 * 6;                     // first bar of a Monday (d = 21 -> use d%7==0)
+  const weekendBars = [];
+  for (let i = 120; i < N; i++) { const d = Math.floor(i / 6); if (d % 7 === 0 && wantObs(i) !== null) weekendBars.push(i); }
+  const weekendDiffers = weekendBars.some((i) => Number.isFinite(vCal[i]) && Math.abs(vCal[i] - wantObs(i)) > 1e-9);
+
+  // (b) the holiday, same test at d = 13 (first open day after it)
+  const holidayBar = 13 * 6 + 1;
+  const holidayDiffers = Number.isFinite(vCal[holidayBar]) && wantObs(holidayBar) !== null
+    && Math.abs(vCal[holidayBar] - wantObs(holidayBar)) > 1e-9;
+
+  // (c) TWO CONSECUTIVE SESSIONS WITH THE SAME VALUE. Days 20 and 21 both
+  //     report 500.0. The na gate must still count them as two observations —
+  //     a value-change heuristic would collapse them into one.
+  const twoSameBar = 21 * 6 + 5;
+  const wantTwoSame = wantObs(twoSameBar);
+  const twoSameOK = Number.isFinite(vObs[twoSameBar]) && wantTwoSame !== null
+    && Math.abs(vObs[twoSameBar] - wantTwoSame) < 1e-9
+    && String(wantTwoSame).length > 0;
+  // and prove the fixture really contains the duplicate
+  const dupPresent = flowOf(20) === flowOf(21);
+
+  // (d) the label must never say "5D" unless the shape supports it
+  const labels = RAW.match(/etfRowLbl\s*=\s*[^\n]*/)?.[0] ?? '';
+  const noFalse5D = !/"ETF 5D"/.test(RAW) && labels.includes('ETF LAST 5 OBS')
+    && labels.includes('ETF 5 CAL-DAY') && labels.includes('ETF 30-BAR SUM');
+
+  line(25, check(obsSeen > 100 && obsBad === 0 && weekendDiffers && holidayDiffers && twoSameOK && dupPresent && noFalse5D,
+    `ETF: obs total ${obsBad}/${obsSeen} wrong, weekend differs ${weekendDiffers}, holiday differs ${holidayDiffers}, duplicate-value sessions ${twoSameOK}, labels ${noFalse5D}`),
+    `ETF five-day semantics — under the na-gated contract the total is exactly the last five OBSERVATIONS on all ${obsSeen} tested bars, skipping weekends and a holiday; two consecutive sessions reporting the SAME 500.0 still count twice, because the gate is the na and not the value`);
+  note(`the forward-filled calendar sample differs from the observation total across weekends and the holiday, which is why that mode is labelled ETF 5 CAL-DAY and is NOT called a five-trading-day flow`);
+  note(`no string "ETF 5D" survives anywhere in main.pine; the row label is one of ETF LAST 5 OBS / ETF 5 CAL-DAY / ETF 30-BAR SUM`);
+}
+
+// ================== 26. percentile extremeness vs sigma state, measured =======
+// The two are different statistics and the dashboard now says so. This measures
+// how often they disagree, so "99.4p but NORMAL" is a documented rate rather
+// than a surprise. Data-product statistic only; no forward return anywhere.
+{
+  const MEAS = [
+    ['OI 24H', 't_oiP24', 'oi24'],
+    ['OI 4H', 't_oiP4', 'oi4'],
+    ['PREMIUM', 't_premP', 'pm'],
+    ['PARTICIP', 't_partP', 'pt'],
+    ['SPOT RVOL', 't_rvolSpotP', 'rs'],
+    ['PERP RVOL', 't_rvolPerpP', 'rp'],
+  ];
+  // Percentile tiers chosen to mirror the two-sided sigma gates under a normal
+  // distribution. They are a DISPLAY comparison, not a fitted mapping, and
+  // nothing downstream uses them.
+  const tierOf = (p) => { const e = Math.max(p, 100 - p); return e >= 97.5 ? 2 : e >= 84 ? 1 : 0; };
+  let tot = 0, dis = 0, rareNormal = 0, extremeCommon = 0;
+  const rows2 = [];
+  for (const [name, pk, lk] of MEAS) {
+    const P = ser(ctx, pk), L = D.lvl[lk];
+    let n = 0, d = 0, rn = 0, ec = 0;
+    for (let i = 0; i < nb; i++) {
+      if (!Number.isFinite(P[i]) || !Number.isFinite(L[i])) continue;
+      n++;
+      const t = tierOf(P[i]);
+      if (t !== L[i]) d++;
+      if (t >= 2 && L[i] === 0) rn++;
+      if (L[i] >= 2 && t === 0) ec++;
+    }
+    tot += n; dis += d; rareNormal += rn; extremeCommon += ec;
+    rows2.push(`${name.padEnd(10)} n=${String(n).padStart(5)}  disagree ${((d / n) * 100).toFixed(1).padStart(5)}%   rare-but-NORMAL ${((rn / n) * 100).toFixed(2)}%   EXTREME-but-common ${((ec / n) * 100).toFixed(2)}%`);
+  }
+  const rate = (dis / tot) * 100;
+  line(26, check(tot > 5000 && rate < 25,
+    `percentile/sigma disagreement ${rate.toFixed(1)}% over ${tot} readings`),
+    `percentile vs sigma tiers disagree on ${rate.toFixed(1)}% of ${tot} readings; the confusing case — a value in the rarest 2.5% while the state still reads NORMAL — occurs on ${((rareNormal / tot) * 100).toFixed(2)}% of them, which is why the state cell carries a [σ] marker`);
+  rows2.forEach(note);
+  note('percentile tiers here mirror the two-sided sigma gates for comparison only; nothing in the indicator uses them, and no threshold was changed on the strength of this measurement');
 }
 
 console.log('\n' + '='.repeat(98));

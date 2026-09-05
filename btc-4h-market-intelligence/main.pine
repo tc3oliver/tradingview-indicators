@@ -4,7 +4,7 @@
 //@version=6
 indicator("BTC 4H Market Radar", overlay = true, max_bars_back = 2500)
 
-// THRESHOLD-VERSION: v3.1
+// THRESHOLD-VERSION: v3.2
 // Bump this whenever a threshold, window or state DEFINITION changes in a way
 // that alters what an event means. It is one of the five fields that identify a
 // prospective cohort (audit/cohort.mjs); events recorded under a different
@@ -102,7 +102,7 @@ extFunding = input.source(close, "  Aggregated funding rate",   group = G_EXT, t
 fundUnit   = input.string("Decimal (0.0001 = 0.01%)", "  Funding unit", options = ["Decimal (0.0001 = 0.01%)", "Percent (0.01 = 0.01%)", "Basis points (1 = 0.01%)"], group = G_EXT, tooltip = "The z-score and percentile do not care about scale, but the printed rate does. Get this wrong and the FUNDING row is off by 100x while still looking plausible.")
 useEtf     = input.bool(false, "Enable ETF flow adapter",       group = G_EXT)
 extEtf     = input.source(close, "  US spot BTC ETF net flow",  group = G_EXT)
-etfShape   = input.string("Daily value, repeated within the day", "  ETF source shape", options = ["Daily value, repeated within the day", "Per-bar increment"], group = G_EXT, tooltip = "ETF flow is published DAILY. On a 4H chart a daily plot is normally carried forward across all six bars of the day, so summing 30 bars counts every day six times. Pick 'Daily value' and the 5-day total samples one bar per day instead. Pick 'Per-bar increment' only if each 4H bar genuinely carries its own separate flow.")
+etfShape   = input.string("Daily value, repeated within the day", "  ETF source shape", options = ["Daily value, na except on a new observation", "Daily value, repeated within the day", "Per-bar increment"], group = G_EXT, tooltip = "ETF flow is published DAILY, on US trading days only. What the script can compute — and what it is allowed to call the result — depends entirely on which of these your plot is.\n\nna except on a new observation: the ONLY shape that supports a true 'last five observations' total. Your source must plot the figure on ONE bar per observation and na on every other bar — including every bar of a weekend or a market holiday. Row reads ETF LAST 5 OBS.\n\nRepeated within the day: a daily figure carried across all six 4H bars. The total then samples one bar per CALENDAR day, so a weekend or a holiday re-counts the previous session. Row reads ETF 5 CAL-DAY and it is not a five-trading-day flow.\n\nPer-bar increment: each 4H bar carries its own separate flow. Row reads ETF 30-BAR SUM.")
 useLiqL    = input.bool(false, "Enable long-liquidation adapter",  group = G_EXT)
 extLiqL    = input.source(close, "  Long liquidations",         group = G_EXT, tooltip = "Notional or contracts — for the LONG LIQ row itself either is fine, because only its own percentile is read.")
 useLiqS    = input.bool(false, "Enable short-liquidation adapter", group = G_EXT)
@@ -291,6 +291,15 @@ staleBars(src) =>
         n := src != src[1] ? 0 : n + 1
     n
 
+// Bars since the source last carried a value at all. The na-gated ETF shape is
+// SUPPOSED to be na on the five bars of a day that carry no new figure, so for
+// that shape "na" means "no observation this bar", not "no feed" — and its
+// update activity has to be measured on arrivals rather than on changes.
+barsSinceValue(src) =>
+    var int n = 999
+    n := na(src) ? n + 1 : 0
+    n
+
 onChartClose(src) =>
     h = ta.highest(math.abs(src - close), 50)
     // na for the first 50 bars: not enough history to tell a wired plot from
@@ -303,6 +312,7 @@ onChartClose(src) =>
 // it is the whole of the printed rate.
 fundScale = fundUnit == "Percent (0.01 = 0.01%)" ? 0.01 : fundUnit == "Basis points (1 = 0.01%)" ? 0.0001 : 1.0
 fundCanon = extFunding * fundScale
+etfNaGated   = etfShape == "Daily value, na except on a new observation"
 etfDailyMode = etfShape == "Daily value, repeated within the day"
 
 // staleBars() and onChartClose() read the RAW input, before canonicalisation:
@@ -321,7 +331,12 @@ adapterStat(enabled, src, wired, held, staleAfter) =>
     not enabled ? 0 : na(src) ? 0 : not wired ? 1 : held > staleAfter ? 2 : held >= 1 ? 3 : 4
 
 fdStat = adapterStat(useFunding, extFunding, fdWired, fdHeld, BARS_STALE_FUNDING)
-etStat = adapterStat(useEtf,     extEtf,     etWired, etHeld, BARS_STALE_ETF)
+// An na-gated source proves it is wired the instant it produces an na: the
+// chart's own close is never na, so the wiring test that works for the other
+// three adapters is neither needed nor usable here.
+etfObsAge = barsSinceValue(extEtf)
+etfNaSeen = ta.highest(na(extEtf) ? 1.0 : 0.0, 200) > 0
+etStat = not useEtf ? 0 : etfNaGated ? (not (etfNaSeen or etWired) ? 1 : etfObsAge > BARS_STALE_ETF ? 2 : etfObsAge >= 1 ? 3 : 4) : adapterStat(useEtf, extEtf, etWired, etHeld, BARS_STALE_ETF)
 lLStat = adapterStat(useLiqL,    extLiqL,    lLWired, lLHeld, BARS_STALE_LIQ)
 lSStat = adapterStat(useLiqS,    extLiqS,    lSWired, lSHeld, BARS_STALE_LIQ)
 
@@ -332,19 +347,11 @@ liqSOK = lSStat >= 3
 liqOK  = liqLOK and liqSOK
 
 // ------------------------------------------------------------ 4. helpers ----
-// Every ta.* call below runs UNCONDITIONALLY and is masked afterwards. Calling
-// a stateful builtin inside a ternary branch leaves its internal window with
-// holes on the bars the branch was not taken, which silently corrupts every
-// later value. v2 did exactly that on nine series.
-zOf(src, len) =>
-    s = ta.stdev(src, len)
-    s > 0 ? (src - ta.sma(src, len)) / s : 0.0
-
-// Empirical rank of the current value within the same window, 0-100. Reported
-// first because crypto returns are not normal and a σ implies a normality the
-// data does not have.
-pctOf(src, len) =>
-    ta.percentrank(src, len)
+// Every ta.* call in this file runs UNCONDITIONALLY and is masked afterwards.
+// Calling a stateful builtin inside a ternary branch leaves its internal window
+// with holes on the bars the branch was not taken, which silently corrupts
+// every later value. v2 did exactly that on nine series. The one exception is
+// validNorm() below, which is stateless and calls no ta.* function at all.
 
 // How far from the middle, regardless of side. Used only to RANK anomalies.
 extOf(p) =>
@@ -375,26 +382,85 @@ big(x) =>
 
 // MISSING-VALUE POLICY for everything that feeds a rolling window.
 //
-// Pine's ta.* functions return na for the whole window if any value in it is
-// na, so a gap cannot simply be left as na — the reading would blank for 180
-// bars. v3.0 used nz(), which substitutes 0. That was wrong twice over:
-//   - on a CHANGE series, 0 is "no change", a real reading the market never
-//     produced, and injecting it understates variance;
-//   - worse, a zero open-interest tick produced a genuine -100% change, and one
-//     -100% in a 180-bar window inflated the rolling standard deviation 4.5x,
-//     which silently suppressed 93% of the OI anomalies that should have fired
-//     over the following 30 days. Measured on the Binance history: 747 bars,
-//     5.8% of it, firing rate 21.5% -> 1.5%.
+// Three attempts, and the first two were both wrong:
 //
-// Carrying the last OBSERVED value forward adds no information but invents
-// none either. Before the first observation it stays na, so the warm-up is
-// honestly blank rather than anchored to a made-up zero.
-// Per-call-site `var`: call each site exactly once, unconditionally.
-holdLast(x) =>
-    var float last = na
-    if not na(x)
-        last := x
-    last
+//   v3.0  nz()            substituted 0. On a CHANGE series 0 means "no
+//                         change", a reading the market never produced. Worse,
+//                         a zero open-interest tick produced a genuine -100%
+//                         change, and one -100% in a 180-bar window inflated
+//                         the rolling standard deviation 4.5x — which silently
+//                         suppressed 93% of the OI anomalies that should have
+//                         fired over the next 30 days.
+//   v3.1  carry-forward   repeated the last observed value. That invents no NEW
+//                         number, but it is not neutral either: it WEIGHTS the
+//                         previous observation once per missing bar.
+//                         [+2%, na, na, -1%] became [+2%, +2%, +2%, -1%], and
+//                         +2% then counted three times in the mean, the
+//                         standard deviation and the rank.
+//   v3.2  skip            a missing bar contributes NOTHING. It is not zero, it
+//                         is not a repeat, and it does not occupy a slot.
+//
+// Why this is not left to ta.sma()/ta.stdev(): the Pine documentation says
+// "some built-in functions, such as ta.sma(), ignore the bars with na values" —
+// note "some", and note that no equivalent statement exists for ta.stdev().
+// Pairing a function that skips na with one that does not would compute the
+// mean and the deviation over two DIFFERENT sample sets and return a z-score
+// that is subtly wrong rather than na. That is a silent failure, and this whole
+// revision exists because of one of those. So the statistics are computed here,
+// explicitly, in one pass, and the sample set is provably shared.
+//
+// Welford's method: numerically stable in a single pass, so no catastrophic
+// cancellation on series whose values are small relative to their mean.
+//
+// Returns [z, percentile, n]. na until minN valid samples exist in the window.
+// Holds no state and calls no ta.* function, so — unlike almost everything else
+// in this file — it is safe to call conditionally.
+// `cur` and the SAMPLE SET are separate arguments because they are separate
+// questions. The ETF total is well defined on every bar, but a new SAMPLE only
+// arrives when the source publishes one; ranking today's total against the
+// observation set is right, and adding today's bar to that set again would not
+// be. Every other measure passes the same series twice, deliberately: a
+// one-line wrapper doing that for them looked tidier and was quietly broken —
+// history indexing on a series parameter does not survive a nested user
+// function call, so src[i] silently collapsed to src[0], every sample in the
+// window became identical, sd went to zero and every z-score read 0.00. Call it
+// directly.
+validNorm(cur, src, len, minN) =>
+    float m  = 0.0
+    float m2 = 0.0
+    int   n  = 0
+    int   le = 0
+    for i = 0 to len - 1
+        v = src[i]
+        if not na(v)
+            n += 1
+            d = v - m
+            m += d / n
+            m2 += d * (v - m)
+            // Rank against the OTHER valid samples in the same window: a value
+            // cannot be more or less than itself. Window and validity rule are
+            // identical to the ones the mean and sd use.
+            if i > 0 and not na(cur) and v <= cur
+                le += 1
+    float z = na
+    float p = na
+    if n >= minN and not na(cur) and n > 1
+        sd = math.sqrt(m2 / n)
+        z := sd > 0 ? (cur - m) / sd : 0.0
+        p := 100.0 * le / (n - 1)
+    [z, p, n]
+
+// Sum of the last k VALID observations, looking back at most maxBack bars.
+// na until k of them exist. Used for the ETF total, where "the last five
+// observations" and "the last five calendar days" are different things.
+sumLastValid(src, k, maxBack) =>
+    float s = 0.0
+    int got = 0
+    for i = 0 to maxBack - 1
+        if got < k and not na(src[i])
+            s += src[i]
+            got += 1
+    got >= k ? s : na
 
 // The direction axis. Nothing else is allowed to decide a direction word.
 dirOf(x) =>
@@ -500,12 +566,46 @@ partRaw  = partOK ? partRawU : na
 // Five days of ETF flow, computed to match what one observation of the source
 // actually represents. Both forms are evaluated unconditionally and one is
 // selected, so math.sum's window never has a hole in it.
-etfIncr5  = math.sum(extEtf, BARS_PER_DAY * 5)
-etfDaily5 = extEtf + extEtf[BARS_PER_DAY] + extEtf[BARS_PER_DAY * 2] + extEtf[BARS_PER_DAY * 3] + extEtf[BARS_PER_DAY * 4]
-etf5dRaw  = etfDailyMode ? etfDaily5 : etfIncr5
-etf5d     = etfOK ? etf5dRaw : na
+// THREE DIFFERENT SUMS, and only one of them is a five-observation total.
+// The row label changes with the mode so the dashboard can never call something
+// a five-day flow when it is not one.
+//
+//   ETF LAST 5 OBS    the last five bars that actually carried a figure. Needs
+//                     the na-gated contract. Weekends and holidays are simply
+//                     absent, and two consecutive sessions reporting the SAME
+//                     number still count twice, because the gate is the na and
+//                     not the value.
+//   ETF 5 CAL-DAY     one sample per calendar day. If the plot forward-fills,
+//                     a Friday figure is re-counted on Saturday and Sunday.
+//                     This is a documented defect of the source shape, not of
+//                     the arithmetic, and it is why the label says CAL-DAY.
+//   ETF 30-BAR SUM    thirty 4H increments.
+//
+// nz() is correct in the increment branch and only there: a bar with no
+// increment genuinely contributed zero flow. It is not correct anywhere else in
+// this file.
+etfIncr5   = math.sum(nz(extEtf), BARS_PER_DAY * 5)
+etfDaily5  = extEtf + extEtf[BARS_PER_DAY] + extEtf[BARS_PER_DAY * 2] + extEtf[BARS_PER_DAY * 3] + extEtf[BARS_PER_DAY * 4]
+// 90 bars = 15 calendar days, enough for five sessions to survive two weekends
+// and a holiday. Gated: sumLastValid holds no state and calls no ta.* function,
+// so the loop is only walked when the shape that needs it is selected.
+ETF_MAXBACK = 90
+float etfObs5 = na
+if etfNaGated
+    etfObs5 := sumLastValid(extEtf, 5, ETF_MAXBACK)
+etf5dRaw   = etfNaGated ? etfObs5 : etfDailyMode ? etfDaily5 : etfIncr5
+etf5d      = etfOK ? etf5dRaw : na
+etfRowLbl  = etfNaGated ? "ETF LAST 5 OBS" : etfDailyMode ? "ETF 5 CAL-DAY" : "ETF 30-BAR SUM"
+// Only the na-gated shape can tell a new observation from a repeat, so only it
+// can keep repeats out of the normalisation window.
+etfSample  = etfNaGated ? (na(extEtf) ? na : etf5dRaw) : etf5dRaw
+
 soprDevU = not na(soprD) ? soprD - 1.0 : na
 soprDev  = soprOK ? soprDevU : na
+// SOPR is a DAILY figure delivered on all six 4H bars of the day by
+// request.security's forward fill. Its bar time is available, so a new
+// observation is identifiable exactly — no value-change guessing required.
+soprObsU = not na(soprT) and (na(soprT[1]) or soprT != soprT[1]) ? soprDevU : na
 
 // Liquidation balance. The ratio is dimensionless, which is NOT the same as
 // unit-free: (L - S) / (L + S) subtracts one feed from the other, so it means
@@ -521,45 +621,56 @@ liqBal   = liqBalOK ? liqBalU : na
 // -------------------------------------- 6. normalisation: percentile and z ---
 // Computed unconditionally, masked afterwards. Same window for both, so the
 // rank and the σ always describe the same history.
-// One carried-forward series per measure, built ONCE and reused by both the
-// z-score and the percentile so the two always describe the same history. No
-// nz() anywhere: a synthetic zero is a value the market did not produce.
-oiChg4hFill  = holdLast(oiChg4hRaw)
-oiChg24hFill = holdLast(oiChg24hRaw)
-premiumFill  = holdLast(premiumRaw)
-partRawFill  = holdLast(partRawU)
-rvolSpotFill = holdLast(rvolSpotRaw)
-rvolPerpFill = holdLast(rvolPerpRaw)
-fundFill     = holdLast(fundCanon)
-etfFill      = holdLast(etf5dRaw)
-liqLFill     = holdLast(extLiqL)
-liqSFill     = holdLast(extLiqS)
-liqBFill     = holdLast(liqBalU)
-soprDevFill  = holdLast(soprDevU)
+// Every measure is normalised against the VALID OBSERVATIONS in its window.
+// A bar with no observation is skipped: it is not zero, not a repeat, and it
+// does not occupy a slot. z and percentile come out of one pass over one sample
+// set, so they can never describe different histories.
+minSamp = math.max(30, zWin / 4)
+minDaily = 10                                  // SOPR: ~30 daily obs in 180 bars
 
-oiZ4U   = zOf(oiChg4hFill, zWin)
-oiZ24U  = zOf(oiChg24hFill, zWin)
-oiP4U   = pctOf(oiChg4hFill, zWin)
-oiP24U  = pctOf(oiChg24hFill, zWin)
-premZU  = zOf(premiumFill, zWin)
-premPU  = pctOf(premiumFill, zWin)
-partZU  = zOf(partRawFill, zWin)
-partPU  = pctOf(partRawFill, zWin)
-rvSpZU  = zOf(rvolSpotFill, zWin)
-rvSpPU  = pctOf(rvolSpotFill, zWin)
-rvPpZU  = zOf(rvolPerpFill, zWin)
-rvPpPU  = pctOf(rvolPerpFill, zWin)
-fundZU  = zOf(fundFill, zWin)
-fundPU  = pctOf(fundFill, zWin)
-etfZU   = zOf(etfFill, zWin)
-etfPU   = pctOf(etfFill, zWin)
-liqLZU  = zOf(liqLFill, zWin)
-liqLPU  = pctOf(liqLFill, zWin)
-liqSZU  = zOf(liqSFill, zWin)
-liqSPU  = pctOf(liqSFill, zWin)
-liqBZU  = zOf(liqBFill, zWin)
-liqBPU  = pctOf(liqBFill, zWin)
-soprPU  = pctOf(soprDevFill, zWin)
+[oiZ4U,  oiP4U,  oiN4 ]  = validNorm(oiChg4hRaw,  oiChg4hRaw,  zWin, minSamp)
+[oiZ24U, oiP24U, oiN24]  = validNorm(oiChg24hRaw, oiChg24hRaw, zWin, minSamp)
+[premZU, premPU, premN]  = validNorm(premiumRaw,  premiumRaw,  zWin, minSamp)
+[partZU, partPU, partN]  = validNorm(partRawU,    partRawU,    zWin, minSamp)
+[rvSpZU, rvSpPU, rvSpN]  = validNorm(rvolSpotRaw, rvolSpotRaw, zWin, minSamp)
+[rvPpZU, rvPpPU, rvPpN]  = validNorm(rvolPerpRaw, rvolPerpRaw, zWin, minSamp)
+[soprZU, soprPU, soprN]  = validNorm(soprObsU,    soprObsU,    zWin, minDaily)
+
+// The four adapter windows are only walked when their adapter is on. validNorm
+// holds no state and calls no ta.* function, so a conditional call is safe here
+// — which is NOT true of anything else in this file, and is the only reason the
+// gate is allowed. It keeps the default configuration down to seven window
+// walks per bar instead of eleven.
+float fundZU = na
+float fundPU = na
+float etfZU  = na
+float etfPU  = na
+float liqLZU = na
+float liqLPU = na
+float liqSZU = na
+float liqSPU = na
+float liqBZU = na
+float liqBPU = na
+if useFunding
+    [z, p, n] = validNorm(fundCanon, fundCanon, zWin, minSamp)
+    fundZU := z
+    fundPU := p
+if useEtf
+    [z, p, n] = validNorm(etf5dRaw, etfSample, zWin, etfNaGated ? minDaily : minSamp)
+    etfZU := z
+    etfPU := p
+if useLiqL
+    [z, p, n] = validNorm(extLiqL, extLiqL, zWin, minSamp)
+    liqLZU := z
+    liqLPU := p
+if useLiqS
+    [z, p, n] = validNorm(extLiqS, extLiqS, zWin, minSamp)
+    liqSZU := z
+    liqSPU := p
+if useLiqL and useLiqS
+    [z, p, n] = validNorm(liqBalU, liqBalU, zWin, minSamp)
+    liqBZU := z
+    liqBPU := p
 
 // OI 24H takes EMA(2) on its z before the ladder. It was the only candidate
 // that cleared every gate in the stability audit: label run 2 -> 3 bars, 100%
@@ -705,19 +816,30 @@ statWordD(s) => s == 4 ? "FRESH" : s == 3 ? "1D OLD" : s == 2 ? "STALE" : s == 1
 // positive the vocabulary is built to admit rather than hide.
 adaptWord(s) => s == 4 ? "ACTIVE" : s == 3 ? "UNCHANGED 1 BAR" : s == 2 ? "LIKELY STALE" : s == 1 ? "MISCONFIGURED" : "UNAVAILABLE"
 
+// THREE ROLES, NEVER MIXED — the reading order of every measure row is
+//   RAW VALUE   what happened, and the direction word. Nothing else decides it.
+//   Z-SCORE     state intensity, through the hysteresis ladder.
+//               NORMAL / UNUSUAL / EXTREME. Marked [σ] on the dashboard.
+//   PERCENTILE  historical rarity, and the ranking used to order ANOMALIES.
+// The percentile does not decide the state and never has. It is shown first
+// because it makes no normality assumption; the state is marked [σ] so that a
+// row reading "99.4p ... NORMAL [σ]" is legible as two different statements
+// rather than as a bug.
+SIG = " [σ]"
+
 trendLbl = not dailyOK ? "DATA UNAVAILABLE" : trendPhrase(trSt)
 volLbl   = na(volPct) ? "DATA UNAVAILABLE" : volPct > 80 ? "HIGH" : volPct > 55 ? "ELEVATED" : volPct < 20 ? "COMPRESSED" : "NORMAL"
-oi24Lbl  = not oiOK ? "DATA UNAVAILABLE" : oiPhrase(oi24Lvl, oi24Dir)
-oi4Lbl   = not oiOK ? "DATA UNAVAILABLE" : oiPhrase(oi4Lvl, oi4Dir)
-fundLbl  = not fundOK ? adaptWord(fdStat) : fundPhrase(fdLvl, fdDir)
-premLbl  = na(premium) ? "DATA UNAVAILABLE" : premPhrase(pmLvl, pmDir)
-partLbl  = not partOK ? "DATA UNAVAILABLE" : partPhrase(ptLvl, ptDir)
-rsLbl    = na(rvolSpotZ) ? "DATA UNAVAILABLE" : rvolPhrase(rsLvl, rsDir)
-rpLbl    = na(rvolPerpZ) ? "DATA UNAVAILABLE" : rvolPhrase(rpLvl, rpDir)
-etfLbl   = not etfOK ? adaptWord(etStat) : etfPhrase(etLvl, etDir)
+oi24Lbl  = not oiOK ? "DATA UNAVAILABLE" : oiPhrase(oi24Lvl, oi24Dir) + SIG
+oi4Lbl   = not oiOK ? "DATA UNAVAILABLE" : oiPhrase(oi4Lvl, oi4Dir) + SIG
+fundLbl  = not fundOK ? adaptWord(fdStat) : fundPhrase(fdLvl, fdDir) + SIG
+premLbl  = na(premium) ? "DATA UNAVAILABLE" : premPhrase(pmLvl, pmDir) + SIG
+partLbl  = not partOK ? "DATA UNAVAILABLE" : partPhrase(ptLvl, ptDir) + SIG
+rsLbl    = na(rvolSpotZ) ? "DATA UNAVAILABLE" : rvolPhrase(rsLvl, rsDir) + SIG
+rpLbl    = na(rvolPerpZ) ? "DATA UNAVAILABLE" : rvolPhrase(rpLvl, rpDir) + SIG
+etfLbl   = not etfOK ? adaptWord(etStat) : etfPhrase(etLvl, etDir) + SIG
 soprLbl  = not soprOK ? "DATA UNAVAILABLE" : soprPhrase(spSt)
-liqLLbl  = not liqLOK ? adaptWord(lLStat) : liqPhrase(lqLLvl, "LONG")
-liqSLbl  = not liqSOK ? adaptWord(lSStat) : liqPhrase(lqSLvl, "SHORT")
+liqLLbl  = not liqLOK ? adaptWord(lLStat) : liqPhrase(lqLLvl, "LONG") + SIG
+liqSLbl  = not liqSOK ? adaptWord(lSStat) : liqPhrase(lqSLvl, "SHORT") + SIG
 liqBLbl  = not liqOK ? "DATA UNAVAILABLE" : not liqPaired ? "DATA INCOMPARABLE" : lqBDir > 0 ? "MORE LONG LIQUIDATIONS" : lqBDir < 0 ? "MORE SHORT LIQUIDATIONS" : "BALANCED"
 
 // =========================================================== 10. anomalies ===
@@ -753,7 +875,7 @@ addAnom("SPOT RVOL *", rsLvl != 0,   rvolPhrase(rsLvl, rsDir),   rvolSpotP, rvol
 addAnom("PERP RVOL *", rpLvl != 0,   rvolPhrase(rpLvl, rpDir),   rvolPerpP, rvolPerpZ)
 addAnom("LONG LIQ *",  lqLLvl != 0,  liqPhrase(lqLLvl, "LONG"),  liqLP, liqLZ)
 addAnom("SHORT LIQ *", lqSLvl != 0,  liqPhrase(lqSLvl, "SHORT"), liqSP, liqSZ)
-addAnom("ETF 5D",      etLvl != 0,   etfPhrase(etLvl, etDir),    etfP,   etfZ)
+addAnom(etfRowLbl,     etLvl != 0,   etfPhrase(etLvl, etDir),    etfP,   etfZ)
 addAnom("SOPR",        spSt != 0,    soprPhrase(spSt),   soprP,  soprDev)
 
 anomCount = array.size(aName)
@@ -880,9 +1002,9 @@ if conf
     // One line per ETF change, not two: a direction flip already says what the
     // new state is, so the generic "entered" line would only repeat it.
     if kEt == 3
-        fire("ETF 5D " + str.lower(etfPhrase(etPrevL, etDir[1])) + " → " + str.lower(etfPhrase(etLvl, etDir)) + " " + pRank(etfP))
+        fire(etfRowLbl + " " + str.lower(etfPhrase(etPrevL, etDir[1])) + " → " + str.lower(etfPhrase(etLvl, etDir)) + " " + pRank(etfP))
     else if kEt != 0 and etLvl != 0
-        fire("ETF 5D " + str.lower(etfPhrase(etLvl, etDir)) + " " + pRank(etfP))
+        fire(etfRowLbl + " " + str.lower(etfPhrase(etLvl, etDir)) + " " + pRank(etfP))
     if kTr != 0
         fire("Slow trend → " + str.lower(trendPhrase(trSt)) + " (" + sgn2(trendDist) + " ATR)")
     if soprOK and not na(soprD[1]) and ((soprD > 1 and soprD[1] <= 1) or (soprD < 1 and soprD[1] >= 1))
@@ -933,7 +1055,10 @@ ageStr(t0) =>
 // silently drop rows off the end. tests.mjs asserts the measured maximum.
 TBL_ROWS = 64
 
-stateCol(s) =>
+stateCol(raw) =>
+    // The [σ] marker is presentation; strip it before matching so a state's
+    // colour never depends on whether it carries the marker.
+    s = str.replace_all(raw, SIG, "")
     color c = color.new(color.gray, 40)
     if str.contains(s, "UNAVAILABLE") or s == "INSUFFICIENT DATA" or str.contains(s, "MISCONFIGURED")
         c := color.new(color.gray, 20)
@@ -1076,7 +1201,7 @@ if showTable and barstate.islast
     // --- SLOW CONTEXT ---
     wideRow(dash, r, "SLOW CONTEXT", color.new(color.blue, 60), size.tiny)
     r += 1
-    addRow(dash, r, "ETF 5D", etfOK ? val3(big(etf5d), etfP, etfZ) : (useEtf ? "check adapter" : "adapter off"), etfLbl)
+    addRow(dash, r, etfRowLbl, etfOK ? val3(big(etf5d), etfP, etfZ) : (useEtf ? "check adapter" : "adapter off"), etfLbl)
     r += 1
     addRow(dash, r, "SOPR", soprOK ? val3(f2(soprD), soprP, soprDev) : "no feed", soprLbl)
     r += 1
@@ -1098,7 +1223,7 @@ if showTable and barstate.islast
     r += 1
     addRow(dash, r, "Funding", useFunding ? (fundUnit) : "off", adaptWord(fdStat))
     r += 1
-    addRow(dash, r, "ETF flow", useEtf ? (etfDailyMode ? "daily value" : "per-bar increment") : "off", adaptWord(etStat))
+    addRow(dash, r, "ETF flow", useEtf ? (etfNaGated ? "na-gated observations" : etfDailyMode ? "daily value, calendar sample" : "per-bar increment") : "off", adaptWord(etStat))
     r += 1
     addRow(dash, r, "Long liquidations", useLiqL ? "adapter" : "off", adaptWord(lLStat))
     r += 1
@@ -1149,7 +1274,8 @@ if anomCount > 0
 plot(tfOK ? 1 : 0,   "t_tfOK",      display = display.none)
 plot(rC,             "t_refClose",  display = display.none)
 plot(oiObs ? 1 : 0,  "t_oiObs",     display = display.none)
-plot(oiChg4hFill,    "t_oiFill4",   display = display.none)
+plot(oiN24,          "t_oiN24",     display = display.none)
+plot(soprZU,         "t_soprZ",     display = display.none)
 plot(atr14,          "t_atr14",     display = display.none)
 plot(volPct,         "t_volPct",    display = display.none)
 plot(trendDist,      "t_trendDist", display = display.none)

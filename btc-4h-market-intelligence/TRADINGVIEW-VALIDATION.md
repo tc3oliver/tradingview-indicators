@@ -11,7 +11,8 @@ single number on the chart is what it claims.
 anything, even as a read-only panel:
 
 ```
-A1 A2 A3 A4 A5      compiles, runs on 4H, refuses every other timeframe
+A1 A2 A3 A4 A5 A6   compiles, runs on 4H, refuses every other timeframe,
+                    and completes inside the execution-time budget
 B1 B2 B3 B4 B5 B6 B7 symbols resolve, OI is base-unit, chart-independence holds
 C1                   lower-timeframe flow returns intrabars at all
 E1                   dashboard renders in priority order
@@ -33,7 +34,7 @@ Until the core list is complete this is a script under validation, not a tool.
 
 ---
 
-`npm test` proves 25 things offline. It cannot prove anything that only exists
+`npm test` proves 27 things offline. It cannot prove anything that only exists
 inside TradingView: whether a symbol resolves, how far its history goes, whether
 `request.security_lower_tf()` returns intrabars, whether the `input.source()`
 picker can even see another indicator's plot, what the table looks like, or
@@ -55,6 +56,7 @@ Work top to bottom. A failure at A1 makes every later row meaningless.
 | A3 | Chart = `BINANCE:BTCUSDT.P`, timeframe = **4H** | Dashboard renders, no runtime error | ☐ |
 | A4 | Switch the chart to 1H, then 1D | Script halts with the 4H-required runtime error, both times | ☐ |
 | A5 | Back to 4H, scroll left to the oldest bar | No `array index out of bounds`, no `max_bars_back` error | ☐ |
+| A6 | **Execution time.** Load the longest history the chart offers, then enable all four adapters | No "Script execution time exceeded". The rolling statistics walk their own window — seven passes of `Percentile / z lookback` per bar, eleven with every adapter on — because `ta.stdev()`'s na behaviour is undocumented and cannot be relied on. If it times out, lower that lookback and report the value that worked | ☐ |
 
 The offline suite verifies the 4H **predicate** (1 at 240, 0 at 60) and that
 `runtime.error` is wired to it. A4 is the only place the error is actually
@@ -111,7 +113,8 @@ pointed at another indicator's plot.
 | D7 | Wire an adapter to a plot that stops updating (or a weekend-only series) | After 6 bars (funding, liquidations) or 30 bars (ETF), status flips to **LIKELY STALE** and the readings stop. Note this is an update-activity heuristic — a legitimately constant live feed reads the same way | ☐ |
 | D8 | Semantic spot-check with real funding | When the raw funding rate is negative, the label says **SHORT FUNDING**, never LONG | ☐ |
 | D9 | **Funding unit.** Compare the FUNDING row against the exchange's published rate | They match. If the row is 100× or 10,000× off, change the Funding unit input — the σ and percentile are unaffected either way, which is exactly why a wrong unit is easy to miss | ☐ |
-| D10 | **ETF shape.** Look at the ETF plot on a 4H chart: does it step once a day or change every bar? | Set ETF source shape to match. A daily plot summed as per-bar increments reads exactly 6× too high | ☐ |
+| D10 | **ETF shape.** Look at the ETF plot on a 4H chart: does it step once a day, change every bar, or go blank between publications? | Set ETF source shape to match, then **read the row label back**: it says ETF LAST 5 OBS, ETF 5 CAL-DAY or ETF 30-BAR SUM. Only the first is a true five-observation total, and it needs a source that plots `na` on every bar carrying no new figure. A daily plot summed as per-bar increments reads exactly 6× too high | ☐ |
+| D10b | With the na-gated shape wired, watch a weekend | The total does **not** change across Saturday and Sunday, and the ETF flow row reads UNCHANGED rather than UNAVAILABLE | ☐ |
 | D11 | **Liquidation pairing.** Confirm both liquidation plots come from the same provider in the same unit | Only then tick "share one source and unit". Until you do, LIQ BALANCE reads DATA INCOMPARABLE — which is correct, not a fault | ☐ |
 
 D7 and D8 are verified offline against a substituted series (checks 11, 12, 1);
@@ -131,6 +134,7 @@ what is manual is whether a real plot arrives through the picker at all.
 | E6 | Create an alert on the script → "Any alert() function call" | Fires on 4H closes only, never intrabar | ☐ |
 | E7 | Leave the alert running through a multi-bar OI expansion | One alert per transition, not one per bar | ☐ |
 | E8 | Read every label on screen | No BUY, SELL, LONG READY, DO NOT CHASE, REDUCE, RISK-ON/OFF | ☐ |
+| E9 | Find a row showing a high percentile with a NORMAL state, e.g. `95.0p … NORMAL [σ]` | The `[σ]` marker makes it legible as two statements: rare by rank, ordinary by σ. Measured at 1.46% of readings — it is not a bug | ☐ |
 
 E4 is important and offline-untestable: PineTS has no realtime bar, so it treats
 the last historical bar as confirmed. What the offline suite proves instead is

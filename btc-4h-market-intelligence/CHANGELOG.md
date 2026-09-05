@@ -4,6 +4,66 @@ Paste-ready release notes for TradingView. Newest first.
 
 ---
 
+## v3.2 — three statistical / semantic fixes
+
+No new features. Threshold version bumped to v3.2, which correctly forced a new
+prospective cohort.
+
+### Fixed
+
+- **Carry-forward re-weighted the previous observation.** v3.1 called it
+  "inventing nothing" — half true, wrong half. `[+2%, na, na, −1%]` became
+  `[+2%, +2%, +2%, −1%]`, so +2% counted three times in the mean, the deviation
+  and the rank. A missing bar now contributes **nothing**: not zero, not a
+  repeat, and it does not occupy a slot. A fixture lifted verbatim out of
+  `main.pine` pins it — n = 10 not 20, mean 0.005 not 0.0125, z exactly 1.0.
+  The statistics are no longer left to `ta.sma()`/`ta.stdev()`: the docs
+  describe na-skipping for the first and say nothing about the second, and
+  pairing them would compute mean and σ over different sample sets. `validNorm()`
+  walks the window itself in one Welford pass and returns z, percentile and
+  sample count from provably the same samples.
+  Applies to OI 4H/24H, premium, participation, both RVOLs and SOPR — SOPR via
+  its own daily bar time, so an observation is identified exactly rather than
+  guessed from a value change.
+- **"ETF 5D" was a claim the arithmetic could not support.** ETF flow is daily
+  and US-trading-day only; sampling five calendar days re-counts a forward-filled
+  Friday twice. Three declared shapes now, each labelled for what it actually
+  sums: **ETF LAST 5 OBS** (needs the na-gated contract — one bar per
+  observation, na everywhere else — and is the only true five-observation
+  total), **ETF 5 CAL-DAY**, **ETF 30-BAR SUM**. The string "ETF 5D" no longer
+  exists in the source. Fixtures cover Fri→Sat→Sun→Mon, a US holiday, and two
+  consecutive sessions with an identical flow value.
+- **The percentile was described as deciding the state.** It never did. Three
+  roles are now fixed and labelled: RAW → direction, **σ → intensity, marked
+  `[σ]` on the dashboard**, percentile → historical rarity and anomaly ranking.
+  Their disagreement is measured rather than assumed: **21.3%** of 78,579
+  readings, and the case that reads like a bug (`95.0p … NORMAL [σ]`) is
+  **1.46%**, concentrated in the fat-tailed measures.
+- **A one-line wrapper that silently zeroed every z-score.** History indexing on
+  a series parameter does not survive a nested user-function call — `src[i]`
+  collapsed to `src[0]`, every window sample became identical, σ went to zero.
+  Caught by the standardisation check, not by inspection.
+
+### Stated, not fixed
+
+- The funding and liquidation adapters **cannot** skip repeats: an
+  `input.source()` is never `na`, so a forward-filled upstream plot weights each
+  observation by the bars it repeats across.
+- Without the na gate, no single `input.source()` can tell a new ETF observation
+  from a repeated one — two identical consecutive trading days look exactly like
+  one carried forward.
+- Seven 180-iteration window walks per bar (eleven with every adapter on).
+  Whether that fits TradingView's execution-time budget is manual check A6.
+
+### Verification
+
+27 offline checks, up from 25. Full re-run: 13,164-bar extraction, hysteresis
+cross-check (still identical to the compiled Pine on every bar), smoothing audit
+(conclusions unchanged), OI 4H de-seasonalization (still REJECTED), cohort guard.
+No threshold was changed.
+
+---
+
 ## v3.1 — four correctness fixes found in review
 
 No new features. Every change below removes a way the panel could display

@@ -31,7 +31,7 @@ indicator("BTC 4H Market Radar — Live Footprint (DESCRIPTIVE ONLY)", overlay =
 //      script that calls it is unusable to everyone else. The Radar must run
 //      for anyone, so the call cannot sit in it — Pine has no way to compile a
 //      function call away behind an input toggle.
-//   2. PineTS, the offline runtime the Radar's 25-check test suite runs on, has
+//   2. PineTS, the offline runtime the Radar's 27-check test suite runs on, has
 //      no implementation of request.footprint(). Putting the call in main.pine
 //      would take down every offline test and every audit in one move, trading
 //      a fully verified core for one unverifiable feature.

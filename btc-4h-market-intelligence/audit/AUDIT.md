@@ -7,12 +7,12 @@
 
 # V3 DATA-PRODUCT AUDIT
 
-**Indicator** `main.pine`, threshold version `v3.1`
+**Indicator** `main.pine`, threshold version `v3.2`
 **Window** 13,164 bars, 2020-09-01 → 2026-09-03
 **Reproduce**
 
 ```bash
-npm test                                # 25 offline checks
+npm test                                # 27 offline checks
 node audit/extract-states.mjs           # run the frozen indicator over the full window
 node audit/hysteresis-verify.mjs
 node audit/smoothing-audit.mjs
@@ -24,6 +24,98 @@ node audit/event-log.mjs
 > true things about the data. It establishes nothing about predictive value, and
 > no test in it computes a forward return. The evidence level of every state is
 > still DESCRIPTIVE.
+
+## 0. v3.2 — three statistical/semantic defects found in review of v3.1
+
+### 0.0.1 Carry-forward re-weighted the previous observation
+
+v3.1 replaced `nz()` with carry-forward and described it as inventing nothing.
+That was half true and the wrong half. It invents no NEW number, but it is not
+neutral: it weights the previous observation once per missing bar.
+`[+2%, na, na, -1%]` became `[+2%, +2%, +2%, -1%]`, so +2% counted three times
+in the mean, the standard deviation and the rank.
+
+**Fix.** A missing bar contributes nothing at all — not zero, not a repeat, and
+it does not occupy a slot. The statistics are no longer left to `ta.sma()` /
+`ta.stdev()` either: the Pine docs describe na-skipping for `ta.sma()` and say
+nothing about `ta.stdev()`, and pairing a skipping function with a
+non-skipping one would compute the mean and the deviation over two different
+sample sets and return a z-score that is subtly wrong rather than na.
+`validNorm()` walks the window in one pass with Welford's method and returns z,
+percentile and sample count from provably the same samples. The percentile is
+defined exactly — the share of the OTHER valid samples in the window that are
+<= the current value — so a unique maximum ranks 100 and a unique minimum 0,
+asserted as an equality rather than a bound.
+
+Fixture (check 5), lifted verbatim out of `main.pine`: on `[+2%, na, na, -1%]`
+the window must report **n = 10 not 20, mean 0.005 not 0.0125, z exactly 1.0**.
+
+Applied to open interest, premium, participation, both RVOLs and SOPR. SOPR uses
+its own daily bar time, so a new observation is identified exactly rather than
+guessed from a value change. It is NOT available to the funding and liquidation
+adapters — an `input.source()` is never na — and that limit is now stated
+instead of glossed.
+
+**Side effects, recorded, no threshold touched.** OI 24H engaged bars
+3,963 -> 3,992, OI 4H 2,789 -> 2,792, WHAT CHANGED 15.3% -> 15.4%. Full-history
+zero-OI windows: sd 0.99x of the rest, firing 21.3% vs 21.5%. 13,142 of 13,164
+bars carry a valid 4H OI observation; the other 22 are skipped, not filled.
+
+### 0.0.2 "ETF 5D" was a claim the arithmetic could not support
+
+ETF flow is published daily, on US trading days only. Sampling t, t-6, t-12,
+t-18, t-24 is five CALENDAR days: a forward-filled Friday figure is re-counted
+on Saturday and Sunday.
+
+**Fix.** Three declared shapes, and the row is named after what it actually
+sums — `ETF LAST 5 OBS`, `ETF 5 CAL-DAY`, `ETF 30-BAR SUM`. The string "ETF 5D"
+no longer exists in the source. Only the first is a true five-observation total
+and it requires a contract: the source plots the figure on ONE bar per
+observation and na on every other bar, weekends and holidays included. Under it,
+two consecutive sessions reporting the SAME value still count twice, because the
+gate is the na and not the value.
+
+**Technical limitation, stated rather than worked around.** Without the na gate
+a single `input.source()` cannot distinguish a new observation from a repeated
+one. Two identical consecutive trading days look exactly like one carried
+forward. That is why the other two modes are not called a five-trading-day flow.
+
+Fixtures (check 25): Fri -> Sat -> Sun -> Mon, a US holiday, and two consecutive
+sessions with an identical flow value.
+
+### 0.0.3 The percentile was described as deciding the state
+
+It never did — the sigma ladder does, and that is what the smoothing and
+hysteresis audits measured. Three roles are now fixed and labelled: RAW gives
+direction, SIGMA gives intensity through the ladder and is marked `[σ]` on the
+dashboard, PERCENTILE gives historical rarity and orders the anomaly list.
+
+**Measured disagreement, full 13,164 bars, 78,579 readings:**
+
+| measure | tiers disagree | rare (top 2.5%) but NORMAL | EXTREME but not rare |
+|---|---|---|---|
+| OI 24H | 20.8% | 0.01% | 0.18% |
+| OI 4H | 12.0% | 0.00% | 0.00% |
+| PREMIUM | 34.6% | **2.88%** | 0.00% |
+| PARTICIP | 6.6% | 0.02% | 0.00% |
+| SPOT RVOL | 27.3% | **2.91%** | 0.00% |
+| PERP RVOL | 26.5% | **2.94%** | 0.00% |
+| **all** | **21.3%** | **1.46%** | 0.03% |
+
+The case that reads like a bug — `95.0p ... NORMAL [σ]` — is 1.46% of readings,
+concentrated in the fat-tailed measures. No forward return was used and no
+threshold was changed on the strength of this.
+
+### 0.0.4 A one-line wrapper that silently zeroed every z-score
+
+`validNorm(src, len, minN) => validNormAt(src, src, len, minN)` looked tidy and
+was broken: history indexing on a series parameter does not survive a nested
+user-function call, so `src[i]` collapsed to `src[0]`, every sample in the
+window became identical, sd went to zero and every z-score read 0.00. Caught by
+the standardisation check, not by inspection. Every call site now calls the
+function directly.
+
+---
 
 ## 0. v3.1 — four defects found in review of v3.0
 
@@ -300,7 +392,10 @@ is kept unmerged.
 | item | status |
 |---|---|
 | same-slot OI 4H normalisation | **REJECTED** by its own pre-registered rule |
-| missing-value handling | carry-forward, which invents nothing but mildly deflates variance if gaps are frequent. Not interpolation, not exclusion — Pine's rolling functions cannot skip a bar |
+| missing-value handling | **skipped**. Shrinks the sample rather than the variance; below 45 valid samples no reading is produced. No interpolation, no future observation |
+| funding / liquidation repeats | an `input.source()` is never na, so a forward-filled upstream plot weights each observation by the bars it repeats across. No escape through this transport |
+| ETF without the na gate | cannot distinguish a new observation from a repeat. The label says CAL-DAY or BAR SUM accordingly |
+| execution time | seven 180-iteration window walks per bar, eleven with all adapters on. Within TradingView's budget? **Unmeasurable offline** — manual check A6 |
 | adapter staleness | an **update-activity heuristic**, not a measurement. A live feed repeating a legitimate value is indistinguishable from a dead one |
 | liquidation pairing | **declared, never verified.** The script cannot check that two `input.source()` plots share a unit; it can only refuse to compute until you say they do |
 | σ ladder vs percentile display | known inconsistency, documented, not resolved |
