@@ -134,7 +134,7 @@ node tests.mjs 15m 2000   # explicit timeframe and bar count
 |---|---|
 | `main.pine` | The indicator. This is what gets pasted into TradingView |
 | `main.v1.pine` | The pre-refactor version, frozen as the differential baseline |
-| `tests.mjs` | The four test groups below |
+| `tests.mjs` | The five test groups below |
 
 `main.pine` ends with 16 `display=display.none` plots exposing each session's
 high, low, high-bar and low-bar. They are invisible on the chart and in the Data
@@ -149,6 +149,7 @@ this uses 16.
 | **no-repaint** | Truncating the data at 50% / 75% / n−10 / n−1 and re-running leaves every past bar unchanged — this is what "does not repaint" means |
 | **staleness** | At any bar, the displayed levels come from the *most recently completed* session, never an older one |
 | **weekend-gap** | Dropping all bars between Friday 17:00 and Sunday 17:00 NY simulates a forex market close; state survives the gap |
+| **coarse-tf-warn** | Every session that never fires on 3h/4h is named in an on-chart warning, and no warning is shown on 1h |
 
 The first three carry an extra safeguard: ground truth is not a re-run of the same
 state machine, but is derived independently by grouping bars by New York date and
