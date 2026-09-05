@@ -2,7 +2,7 @@
 // This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © tc3oliver
 
-//@version=5
+//@version=6
 indicator("Session Highs and Lows Indicator (SMC Sessions, DST-safe)", overlay=true)
 
 // Session windows are meaningless once one candle spans the whole day —
@@ -44,9 +44,11 @@ TZ = "America/New_York"
 // container rollback on realtime bars is a known source of repainting.
 // Must be called unconditionally on every bar or the var state desyncs.
 trackSession(sess, show, col, wid, name) =>
+    // v6: a `bool` can never be `na`, so `inSess[1]` is already false on the
+    // first bar. The v5 code wrapped it in nz(), which v6 rejects for bools.
     inSess  = not na(time("", sess, TZ))
-    isStart = inSess and not nz(inSess[1], false)
-    isEnd   = not inSess and nz(inSess[1], false)
+    isStart = inSess and not inSess[1]
+    isEnd   = not inSess and inSess[1]
 
     var float hi       = na
     var float lo       = na
@@ -91,7 +93,7 @@ trackSession(sess, show, col, wid, name) =>
     // or one warning label accumulates per bar.
     if barstate.islast and show and na(hi)
         label.delete(warnLbl)
-        warnLbl := label.new(bar_index, close, "⚠ " + name + ": no bar opens inside this session on the " + timeframe.period + "-minute timeframe. Use 1h or lower.", yloc=yloc.price, color=color.orange, textcolor=color.white, style=label.style_label_left, size=size.small)
+        warnLbl := label.new(bar_index, close, "⚠ " + name + ": no bar opens inside this session on the " + timeframe.period + " timeframe. Use 30m or lower.", yloc=yloc.price, color=color.orange, textcolor=color.white, style=label.style_label_left, size=size.small)
 
     [hi, lo, hiBar, loBar]
 

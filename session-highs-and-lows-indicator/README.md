@@ -1,6 +1,6 @@
 # Session Highs and Lows Indicator
 
-A TradingView Pine Script v5 indicator that marks the high and low of each SMC/ICT
+A TradingView Pine Script v6 indicator that marks the high and low of each SMC/ICT
 killzone with labels and dashed lines extended to the right.
 
 - **Version**: v3.1 (2026-09-05) — see [CHANGELOG.md](./CHANGELOG.md)

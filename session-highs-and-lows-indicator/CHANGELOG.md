@@ -29,6 +29,10 @@ current timeframe instead of silently showing nothing.
 
 ### Added
 
+- **Updated to Pine Script v6.** Required for public scripts on TradingView. The
+  migration changed no behaviour — output was compared bar by bar against the v5
+  version before publishing.
+
 - **A warning when a session cannot be drawn on your timeframe.** A session is
   only detected if a bar *opens* inside its window. On 3h and 4h charts a 2-hour
   killzone can contain no bar opens at all, so those levels silently never
@@ -128,6 +132,14 @@ hunting, trend trading, and breakout strategies.
 ### 2026-09-05 internal changes
 
 Not in the published notes because they are invisible to users:
+
+- **v5 -> v6 migration.** Only one breaking change actually applied: `nz()` no
+  longer accepts `bool` arguments. Since a `bool` can never be `na` in v6,
+  `nz(inSess[1], false)` became plain `inSess[1]`. Everything else in this script
+  was already v6-clean (no `transp`, no implicit numeric-to-bool casts, no `[]` on
+  literals or UDT fields, `linewidth` minimums already 1).
+  `main.v1.pine` is deliberately left on v5 — the differential test now compares
+  the v5 baseline against the v6 script, which is exactly the migration check.
 
 - Unified the four duplicated session blocks into a single `trackSession()`
   function, 197 -> 128 lines. Uses Pine's function-local `var` (independent state
