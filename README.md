@@ -12,7 +12,7 @@ history, and **tests you can run locally**.
 | Indicator | Description | Version |
 |---|---|---|
 | [session-highs-and-lows-indicator](./session-highs-and-lows-indicator/) | Marks the high and low of each SMC/ICT killzone with labels and extended dashed lines | v3.1 |
-| [btc-4h-market-intelligence](./btc-4h-market-intelligence/) | **BTC 4H Market Radar** — monitors OI, funding, perp premium, spot-vs-perp participation, liquidations, ETF flow and SOPR. Reports recent events, what is anomalous, what price and positioning did together, and which feeds are trustworthy. Direction from raw values, abnormality from percentiles. No score, no signal, no action | v3 |
+| [btc-4h-market-intelligence](./btc-4h-market-intelligence/) | **BTC 4H Market Radar** — monitors OI, funding, perp premium, spot-vs-perp participation, liquidations, ETF flow and SOPR. Reports recent events, what is anomalous, what price and positioning did together, and which feeds are trustworthy. Direction from raw values, abnormality from percentiles. No score, no signal, no action | v3.1 |
 
 ## Research
 
@@ -60,7 +60,8 @@ not committed.
 
 Where a test genuinely cannot run offline, it is listed as **TRADINGVIEW MANUAL
 VALIDATION REQUIRED** rather than quietly dropped — see
-`btc-4h-market-intelligence/TRADINGVIEW-VALIDATION.md`.
+`btc-4h-market-intelligence/TRADINGVIEW-VALIDATION.md`. That indicator is
+currently **CORE READY FOR MANUAL VALIDATION**, not ready for normal use.
 
 Ground truth in these tests is deliberately **not** a re-run of the same logic. It
 is computed by a different algorithm and then compared — agreement only means

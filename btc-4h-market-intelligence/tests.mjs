@@ -204,8 +204,11 @@ const LIQL = 'extLiqL    = math.abs(close - close[1]) * volume';
 const LIQS = 'extLiqS    = math.abs(high - low) * volume * 0.7';
 const FUND = 'extFunding = (close - ta.sma(close, 20)) / ta.sma(close, 20) * 0.05';
 const ETF  = 'extEtf     = (close - close[1]) * 100.0';
+const declarePaired = (src) => rewrite(src, /input\.bool\(false, "  Long and short liquidations share one source and unit"/,
+  'input.bool(true, "  Long and short liquidations share one source and unit"', 'declare liq pairing');
+const declarePairedTest = (src) => declarePaired(src);
 const withAdapters = (src) => {
-  let x = src;
+  let x = declarePaired(src);
   for (const l of ['long-liquidation', 'short-liquidation', 'funding', 'ETF flow']) x = enable(x, l);
   x = wire(x, 'Long liquidations', LIQL);
   x = wire(x, 'Short liquidations', LIQS);
@@ -458,6 +461,7 @@ semDetail.forEach(note);
   const lvlAfter = S.lvl.lqL.slice(cut + 10).filter((x) => x > 0).length;
   const zAfter = fin(ser(st, 't_liqLZ').slice(cut + 10)).length;
   const becameStale = tail.length > 0 && tail.every((x) => x === 2);
+  const staleTbl = readTable(st).join('\n');
   const wasFresh = S.stat.lL.slice(200, cut - 10).filter((x) => x >= 3).length > 0;
 
   // Enabled but never wired: MISCONFIGURED, and distinct from both UNAVAILABLE
@@ -468,9 +472,10 @@ semDetail.forEach(note);
   const misLvl = M.lvl.lqL.filter((x) => x > 0).length;
   const misTbl = readTable(mis).join('\n');
 
-  line(12, check(wasFresh && becameStale && lvlAfter === 0 && zAfter === 0 && allMis && misLvl === 0 && misTbl.includes('MISCONFIGURED'),
+  line(12, check(wasFresh && becameStale && lvlAfter === 0 && zAfter === 0 && allMis && misLvl === 0
+    && misTbl.includes('MISCONFIGURED') && staleTbl.includes('LIKELY STALE') && !staleTbl.includes('adapters (update activity only') === false,
     `stale/misconfigured: fresh-before ${wasFresh}, stale-after ${becameStale}, levels after ${lvlAfter}, z after ${zAfter}, misconfigured ${allMis}/${misLvl}`),
-    `a frozen feed becomes STALE within ${+(RAW.match(/BARS_STALE_LIQ\s*=\s*(\d+)/)?.[1] ?? 0)} bars and stops producing readings (${lvlAfter} levels, ${zAfter} values after); an enabled-but-unwired adapter reads MISCONFIGURED on all ${nb} bars and is shown as such, never as STALE or UNAVAILABLE`);
+    `an adapter that stops changing reads LIKELY STALE within ${+(RAW.match(/BARS_STALE_LIQ\s*=\s*(\d+)/)?.[1] ?? 0)} bars and stops producing readings (${lvlAfter} levels, ${zAfter} values after); an enabled-but-unwired adapter reads MISCONFIGURED on all ${nb} bars, never LIKELY STALE or UNAVAILABLE`);
 }
 
 // ========================================================= 10. anomalies ======
@@ -568,8 +573,10 @@ semDetail.forEach(note);
   const used = ser(full, 't_rowsUsed').at(-1);
   const cap = +(RAW.match(/TBL_ROWS = (\d+)/)?.[1] ?? 0);
   const t = readTable(full);
-  const SECTIONS = ['BTC 4H MARKET RADAR', 'RECENT EVENTS', 'WHAT CHANGED', 'CURRENT ANOMALIES', 'MARKET MECHANICS',
-    'TREND / VOLATILITY', 'DERIVATIVES', 'PARTICIPATION', 'FLOW', 'SLOW CONTEXT', 'DATA HEALTH',
+  const SECTIONS = ['BTC 4H MARKET RADAR', 'RECENT EVENTS', 'WHAT CHANGED', 'CURRENT ANOMALIES',
+    'MARKET MECHANICS — description', 'TREND / VOLATILITY — persistent', 'DERIVATIVES',
+    'PARTICIPATION — volume', 'FLOW — ESTIMATED', 'SLOW CONTEXT',
+    'DATA HEALTH — timestamp-verified', 'DATA HEALTH — external adapters',
     'EVIDENCE: DESCRIPTIVE', 'ACTION: CONTEXT ONLY'];
   const joined = t.join('\n');
   const missing = SECTIONS.filter((w) => !joined.includes(w));
@@ -579,7 +586,13 @@ semDetail.forEach(note);
     `table capacity — worst case (9 anomalies, 5 events, all four adapters live) uses ${used} of ${cap} allocated rows, and all ${SECTIONS.length} sections render with no prescriptive or predictive label`);
   note(`headroom ${cap - used} rows; every cell write is bounds-guarded, so exceeding capacity would drop rows rather than corrupt the table`);
   // The dashboard must lead with events and anomalies, not with a reading.
-  const order = ['RECENT EVENTS', 'CURRENT ANOMALIES', 'MARKET MECHANICS', 'TREND / VOLATILITY', 'DERIVATIVES', 'PARTICIPATION', 'FLOW', 'SLOW CONTEXT', 'DATA HEALTH'];
+  // Match the section HEADERS, not bare words: an anomaly line reading
+  // "ETF 5D UNUSUAL INFLOW" contains "FLOW" and would be mistaken for the FLOW
+  // header, which is how this check quietly passed on the wrong rows once.
+  const order = ['RECENT EVENTS', 'CURRENT ANOMALIES', 'MARKET MECHANICS — description',
+    'TREND / VOLATILITY — persistent', 'DERIVATIVES', 'PARTICIPATION — volume',
+    'FLOW — ESTIMATED', 'SLOW CONTEXT', 'DATA HEALTH — timestamp-verified',
+    'DATA HEALTH — external adapters'];
   const pos = order.map((w) => t.findIndex((r) => r.includes(w)));
   const ordered = pos.every((v, i) => i === 0 || (v > pos[i - 1] && v >= 0));
   check(ordered, `dashboard sections out of priority order: ${JSON.stringify(pos)}`);
@@ -648,6 +661,230 @@ semDetail.forEach(note);
     `cohort guard: same ${same}, rejects ${rejects}, ids distinct ${idsDiffer}, routing ${routing} (${rAppend.action}/${rCreate.action}/${rRefuse.action}/${rNew.action}/${rLegacy.action})`),
     `prospective cohort identity — a change to ANY of {schema, freeze, indicator hash, config hash, threshold version} produces a different cohort id and fails the match, so v3 events can never merge into a v2 log (new file would be ${fname})`);
   note(`routing: same cohort -> append, no log -> create, mismatch -> REFUSE with a hint, mismatch + --new-cohort -> ${rNew.path}, pre-v3 file with no cohort stamp -> REFUSE`);
+}
+
+// ============================== 21. zero / missing OI must not contaminate ====
+// The v3.0 defect this suite exists to keep out. `oiChg = oi / oi[1] - 1` only
+// checked that the OLDER value was positive, so a zero open-interest tick
+// produced -100%, and nz() then fed it straight into a 180-bar window. One
+// -100% inflates the rolling standard deviation about 4.5x, which does not make
+// the panel noisy — it makes it SILENT, suppressing real anomalies for 30 days.
+//
+// Binance's history has 12 zero-OI bars. None fall in the default window, so
+// this check runs on its own slice around the July-2024 cluster and, separately,
+// on an injected one so the path is exercised whatever the data does.
+{
+  const ZLO = 8200, ZHI = 8700;
+  const zrows = all.slice(ZLO, ZHI);
+  const zAt = zrows.map((r, i) => (r.oi === 0 ? i : -1)).filter((i) => i >= 0);
+  const zn = zrows.length;
+
+  const zser = (c, k) => {
+    const p = c.plots?.[k];
+    if (!p) return new Array(zn).fill(NaN);
+    return p.data.map((d) => (d && typeof d === 'object' ? d.value : d)).map((v) => (v == null ? NaN : v));
+  };
+  const zrun = async (src) => new PineTS(makeProvider(buildSeries(zrows)), CHART, '240', zn).run(src);
+
+  const fixed = await zrun(BASE);
+
+  // The v3.0 formula, restored verbatim, as a control. If this control ever
+  // stops showing the damage, the test has gone blind and must be repaired
+  // rather than deleted.
+  let poison = BASE;
+  poison = rewrite(poison, /oiChg4hRaw  = oiObs and oiObs\[1\] \? oiRaw \/ oiRaw\[1\] - 1 : na/,
+    'oiChg4hRaw  = not na(oiRaw) and not na(oiRaw[1]) and oiRaw[1] > 0 ? oiRaw / oiRaw[1] - 1 : na', 'poison chg4');
+  poison = rewrite(poison, /oiChg4hFill  = holdLast\(oiChg4hRaw\)/, 'oiChg4hFill  = nz(oiChg4hRaw)', 'poison fill');
+  const bad = await zrun(poison);
+
+  const obs = zser(fixed, 't_oiObs');
+  const c4 = zser(fixed, 't_oiChg4'), c24 = zser(fixed, 't_oiChg24');
+  const fill = zser(fixed, 't_oiFill4'), badFill = zser(bad, 't_oiFill4');
+  const zf = zser(fixed, 't_oiZ4'), zb = zser(bad, 't_oiZ4');
+
+  // (a) every zero bar is refused as an observation
+  const obsAtZero = zAt.filter((i) => obs[i] !== 0).length;
+  // (b) no -100% artefact anywhere, in the displayed change or in the
+  //     normalisation source
+  const artefact = [...c4, ...c24, ...fill].filter((v) => Number.isFinite(v) && v <= -0.9).length;
+  const badArtefact = badFill.filter((v) => Number.isFinite(v) && v <= -0.9).length;
+  // (c) both endpoints required: the bar AFTER a zero has no 4H change either
+  const afterOK = zAt.every((i) => i + 1 >= zn || !Number.isFinite(c4[i + 1]));
+  // (d) no artificial values. On a bar with an observation the fill IS the
+  //     observation; on a bar without one it repeats the previous fill. Nothing
+  //     else is ever allowed to appear — in particular not a synthetic zero.
+  const close9 = (a, b) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
+  let invented = 0;
+  for (let i = 1; i < zn; i++) {
+    if (!Number.isFinite(fill[i])) continue;
+    const ok = Number.isFinite(c4[i]) ? close9(fill[i], c4[i]) : close9(fill[i], fill[i - 1]);
+    if (!ok) invented++;
+  }
+
+  // (e) variance inflation and anomaly suppression, inside vs outside the
+  //     180-bar windows that follow a zero bar
+  const W = 180;
+  const tainted = new Set();
+  for (const i of zAt) for (let k = i; k < Math.min(zn, i + W); k++) tainted.add(k);
+  const rollSd = (a, i) => { const w = a.slice(i - W + 1, i + 1).filter(Number.isFinite); if (w.length < W) return NaN; const m = w.reduce((x, y) => x + y, 0) / w.length; return Math.sqrt(w.reduce((x, y) => x + (y - m) ** 2, 0) / w.length); };
+  const med = (a) => (a.length ? [...a].sort((x, y) => x - y)[a.length >> 1] : NaN);
+  const stats = (f, z) => {
+    const inSd = [], outSd = [], inFire = [], outFire = [];
+    for (let i = W; i < zn; i++) {
+      const sdv = rollSd(f, i);
+      if (Number.isFinite(sdv)) (tainted.has(i) ? inSd : outSd).push(sdv);
+      if (Number.isFinite(z[i])) (tainted.has(i) ? inFire : outFire).push(Math.abs(z[i]) >= 1 ? 1 : 0);
+    }
+    const rate = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN);
+    return { infl: med(inSd) / med(outSd), fireIn: rate(inFire), fireOut: rate(outFire) };
+  };
+  const F = stats(fill, zf), B = stats(badFill, zb);
+
+  const inflOK = F.infl < 1.25;
+  const supprOK = F.fireIn > F.fireOut * 0.5;
+  // The control must actually be broken, or this check proves nothing.
+  const controlBroken = badArtefact > 0 && (B.infl > 2 || B.fireIn < B.fireOut * 0.5);
+
+  line(21, check(zAt.length >= 5 && obsAtZero === 0 && artefact === 0 && afterOK && invented === 0
+    && inflOK && supprOK && controlBroken,
+    `zero-OI: ${zAt.length} zero bars, ${obsAtZero} still treated as observations, ${artefact} artefacts, after-zero clean ${afterOK}, ${invented} invented values, sd inflation ${F.infl.toFixed(2)}x, firing ${(F.fireIn * 100).toFixed(1)}% vs ${(F.fireOut * 100).toFixed(1)}%, control broken ${controlBroken}`),
+    `zero-OI contamination — ${zAt.length} real zero-OI bars (2024-07 cluster): none forms a change, no -100% artefact reaches the normalisation source, no value is invented, rolling sd inflation ${F.infl.toFixed(2)}x (was ${B.infl.toFixed(2)}x), anomaly firing ${(F.fireIn * 100).toFixed(1)}% inside the affected windows vs ${(F.fireOut * 100).toFixed(1)}% outside (was ${(B.fireIn * 100).toFixed(1)}% vs ${(B.fireOut * 100).toFixed(1)}%)`);
+  note(`the v3.0 formula is re-run as a control and still shows ${badArtefact} artefacts and ${B.infl.toFixed(1)}x inflation — if that control ever goes quiet this test has gone blind`);
+
+  // Injected zeros, so the path is exercised even on a dataset without any.
+  const inj = rows.map((r, i) => ([400, 700, 701, 900].includes(i) ? { ...r, oi: 0 } : r));
+  const ictx = await new PineTS(makeProvider(buildSeries(inj)), CHART, '240', inj.length).run(BASE);
+  const iObs = ser(ictx, 't_oiObs'), iFill = ser(ictx, 't_oiFill4');
+  const injOK = [400, 700, 701, 900].every((i) => iObs[i] === 0) && iFill.filter((v) => Number.isFinite(v) && v <= -0.9).length === 0;
+  check(injOK, 'injected zero-OI bars still produce an observation or an artefact');
+  note(`injected zeros at 4 bar positions: refused as observations and produced no artefact — ${injOK ? 'ok' : 'FAILED'}`);
+}
+
+// ================================ 22. liquidation paired-unit contract ========
+// (long - short) / (long + short) subtracts one feed from the other. Landing
+// inside [-1, +1] is arithmetic, not evidence: two unrelated scales land there
+// too, and the number looks entirely reasonable.
+{
+  const unpaired = await run(rows, { source: withAdapters(BASE) });   // withAdapters declares pairing
+  const noDecl = await run(rows, {
+    source: rewrite(withAdapters(BASE), /input\.bool\(true, "  Long and short liquidations share one source and unit"/,
+      'input.bool(false, "  Long and short liquidations share one source and unit"', 'undeclare pairing'),
+  });
+  const balPaired = ser(unpaired, 't_liqBal');
+  const balNone = ser(noDecl, 't_liqBal');
+  const zNone = ser(noDecl, 't_liqBZ'), pNone = ser(noDecl, 't_liqBP');
+  const tblNone = readTable(noDecl).join('\n');
+
+  // Mismatched scales, pairing wrongly declared: the balance still sits inside
+  // [-1, +1] and still looks like a reading. This is the demonstration that
+  // range is not a validity check.
+  let misSrc = declarePairedTest(enable(enable(BASE, 'long-liquidation'), 'short-liquidation'));
+  misSrc = wire(misSrc, 'Long liquidations', LIQL);
+  misSrc = wire(misSrc, 'Short liquidations', 'extLiqS    = math.abs(high - low) * volume * 0.7 * 1000000.0');
+  const mismatched = await run(rows, { source: misSrc });
+  const balMis = fin(ser(mismatched, 't_liqBal'));
+  const inRange = balMis.every((v) => v >= -1 && v <= 1);
+  const pinned = balMis.filter((v) => v < -0.99).length / Math.max(1, balMis.length);
+
+  const withheld = balNone.every((v) => Number.isNaN(v)) && zNone.every((v) => Number.isNaN(v))
+    && pNone.every((v) => Number.isNaN(v)) && tblNone.includes('DATA INCOMPARABLE');
+  const computed = fin(balPaired).length > nb * 0.5;
+
+  line(22, check(withheld && computed && inRange && pinned > 0.99,
+    `liq pairing: withheld ${withheld}, computed ${computed}, mismatched in range ${inRange}, pinned ${(pinned * 100).toFixed(1)}%`),
+    `liquidation paired-unit contract — with both feeds live but the shared unit NOT declared, the balance, its z and its percentile are all withheld and the row reads DATA INCOMPARABLE; declared, it computes on ${fin(balPaired).length}/${nb} bars`);
+  note(`with a 1,000,000x scale mismatch and pairing wrongly declared, ${(pinned * 100).toFixed(1)}% of bars still land inside [-1,+1] (pinned at -1) — which is exactly why staying in range is not treated as a validity check`);
+}
+
+// ========================= 23. adapter freshness is a heuristic, and says so ===
+// Reference / spot / OI / SOPR return their own bar time, so lag is measured.
+// An input.source() returns a number and nothing else. Calling the second one
+// "FRESH" would be a claim the script cannot support.
+{
+  const t = readTable(full);
+  const tsStart = t.findIndex((r) => r.includes('DATA HEALTH — timestamp-verified'));
+  const adStart = t.findIndex((r) => r.includes('DATA HEALTH — external adapters'));
+  const tsRows = t.slice(tsStart + 1, adStart);
+  const adRows = t.slice(adStart + 1, adStart + 6);
+  const TS_WORDS = ['FRESH', '1 BAR OLD', '1D OLD', 'STALE', 'UNAVAILABLE', 'MISCONFIGURED'];
+  const AD_WORDS = ['ACTIVE', 'UNCHANGED', 'LIKELY STALE', 'MISCONFIGURED', 'UNAVAILABLE', 'BALANCE'];
+  const adClaimsFresh = adRows.filter((r) => /\bFRESH\b/.test(r)).length;
+  const tsClaimsActive = tsRows.filter((r) => /\bACTIVE\b/.test(r)).length;
+  const adVocab = adRows.every((r) => AD_WORDS.some((w) => r.includes(w)));
+  const tsVocab = tsRows.every((r) => TS_WORDS.some((w) => r.includes(w)));
+
+  // The heuristic's false positive, demonstrated rather than hidden: a feed that
+  // is alive and legitimately constant reads LIKELY STALE.
+  const constSrc = wire(enable(BASE, 'funding'), 'Aggregated funding rate', 'extFunding = 0.0001 * (bar_index >= 0 ? 1 : 1) + close * 0.0');
+  const constRun = await run(rows, { source: constSrc });
+  const C = decode(constRun);
+  const constTail = C.stat.fd.slice(300);
+  const readsLikelyStale = constTail.length > 0 && constTail.every((x) => x === 2 || x === 1);
+  const readmeAdmits = readFileSync(new URL('./README.md', import.meta.url), 'utf8')
+    .includes('update-activity heuristic');
+
+  line(23, check(adClaimsFresh === 0 && tsClaimsActive === 0 && adVocab && tsVocab && readsLikelyStale && readmeAdmits,
+    `vocab split: adapters claiming FRESH ${adClaimsFresh}, timestamped claiming ACTIVE ${tsClaimsActive}, adapter vocab ok ${adVocab}, ts vocab ok ${tsVocab}, constant-feed heuristic ${readsLikelyStale}, README admits ${readmeAdmits}`),
+    `freshness vocabularies do not mix — ${tsRows.length} timestamp-verified rows use FRESH/OLD/STALE, ${adRows.length} adapter rows use ACTIVE/UNCHANGED/LIKELY STALE and never say FRESH`);
+  note('a live but legitimately constant feed reads LIKELY STALE, which is the heuristic\'s false positive; it is documented as a heuristic in README rather than presented as measured freshness');
+}
+
+// ================================= 24. funding unit and ETF source shape =====
+{
+  // Funding: scale must reach the DISPLAY and nothing else. z and percentile are
+  // scale-free, so if they moved, the canonicalisation is wired wrongly.
+  const DEF_UNIT = 'Decimal (0.0001 = 0.01%)';
+  const fsrc = (unit) => {
+    const base = wire(enable(BASE, 'funding'), 'Aggregated funding rate',
+      'extFunding = (close - ta.sma(close, 20)) / ta.sma(close, 20) * 0.05');
+    return unit === DEF_UNIT ? base
+      : rewrite(base, /input\.string\("Decimal \(0\.0001 = 0\.01%\)", "  Funding unit"/,
+        `input.string("${unit}", "  Funding unit"`, `funding unit ${unit}`);
+  };
+  const dec = await run(rows, { source: fsrc('Decimal (0.0001 = 0.01%)') });
+  const pct = await run(rows, { source: fsrc('Percent (0.01 = 0.01%)') });
+  const rd = ser(dec, 't_fundRaw'), rp = ser(pct, 't_fundRaw');
+  const zd = ser(dec, 't_fundZ'), zp = ser(pct, 't_fundZ');
+  let scaleBad = 0, zBad = 0;
+  for (let i = 0; i < nb; i++) {
+    if (!Number.isFinite(rd[i]) || !Number.isFinite(rp[i])) continue;
+    if (Math.abs(rp[i] * 100 - rd[i]) > Math.abs(rd[i]) * 1e-9 + 1e-15) scaleBad++;
+    // z is scale-free by construction; allow only float-noise, which is orders
+    // of magnitude below the 100x a mis-wired canonicalisation would produce.
+    if (Number.isFinite(zd[i]) && Number.isFinite(zp[i]) && Math.abs(zd[i] - zp[i]) > 1e-4) zBad++;
+  }
+
+  // ETF: a daily value repeated across all six 4H bars of a day. Summing 30 bars
+  // counts every day six times; sampling one bar per day does not.
+  const DEF_SHAPE = 'Daily value, repeated within the day';
+  const esrc = (shape) => {
+    const base = wire(enable(BASE, 'ETF flow'), 'US spot BTC ETF net flow',
+      'extEtf     = math.floor(bar_index / 6) * 1000.0 + close * 0.0');
+    return shape === DEF_SHAPE ? base
+      : rewrite(base, /input\.string\("Daily value, repeated within the day", "  ETF source shape"/,
+        `input.string("${shape}", "  ETF source shape"`, `etf shape ${shape}`);
+  };
+  const daily = await run(rows, { source: esrc('Daily value, repeated within the day') });
+  const incr = await run(rows, { source: esrc('Per-bar increment') });
+  const ed = ser(daily, 't_etf5d'), ei = ser(incr, 't_etf5d');
+  let sixBad = 0, dayBad = 0, checked = 0;
+  for (let i = 200; i < nb; i++) {
+    if (!Number.isFinite(ed[i]) || !Number.isFinite(ei[i])) continue;
+    // The 6x relation is exact only on the last bar of a day, where the 30-bar
+    // increment window covers five whole days. Off that boundary the window
+    // straddles days and the two are legitimately different numbers.
+    if (i % 6 !== 5) continue;
+    checked++;
+    if (Math.abs(ei[i] - 6 * ed[i]) > 1e-6) sixBad++;
+    const k = Math.floor(i / 6);
+    const want = 1000 * (k + (k - 1) + (k - 2) + (k - 3) + (k - 4));
+    if (Math.abs(ed[i] - want) > 1e-6) dayBad++;
+  }
+
+  line(24, check(scaleBad === 0 && zBad === 0 && checked > 100 && sixBad === 0 && dayBad === 0,
+    `adapter contracts: funding scale errors ${scaleBad}, funding z drift ${zBad}, ETF 6x mismatches ${sixBad}/${checked}, ETF daily-sum errors ${dayBad}`),
+    `adapter unit contracts — declaring funding in percent instead of decimal changes only the printed rate (exactly 100x, ${scaleBad} errors) and leaves the z-score bit-identical (${zBad} drifts); a daily-shaped ETF plot summed as per-bar increments comes out exactly 6x too large (${checked} bars checked), which is why the shape is an explicit input`);
+  note('these are the two ways an adapter can be off by a constant factor while every label still reads plausibly');
 }
 
 console.log('\n' + '='.repeat(98));

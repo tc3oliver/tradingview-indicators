@@ -1,6 +1,39 @@
 # TradingView manual validation checklist
 
-`npm test` proves 21 things offline. It cannot prove anything that only exists
+## Status: CORE READY FOR MANUAL VALIDATION
+
+Not "ready for normal use". The offline suite proves the logic is
+self-consistent and says true things about the data it was given; it cannot
+prove the script compiles on TradingView, that any symbol resolves, or that a
+single number on the chart is what it claims.
+
+**Core acceptance** — all of these must pass before the Radar is used for
+anything, even as a read-only panel:
+
+```
+A1 A2 A3 A4 A5      compiles, runs on 4H, refuses every other timeframe
+B1 B2 B3 B4 B5 B6 B7 symbols resolve, OI is base-unit, chart-independence holds
+C1                   lower-timeframe flow returns intrabars at all
+E1                   dashboard renders in priority order
+E4                   RECENT EVENTS does not grow mid-bar
+E6                   alerts fire on the close and only on the close
+```
+
+**Adapter acceptance** — additionally required *for each adapter you enable*,
+and only for those:
+
+```
+D1 D2 D3            off / misconfigured / can the picker see a plot at all
+D4 D5 D6            the specific adapters you wired
+D7 D8               update-activity heuristic, and the funding sign invariant
+D9 D10 D11          unit contracts: funding unit, ETF shape, liquidation pairing
+```
+
+Until the core list is complete this is a script under validation, not a tool.
+
+---
+
+`npm test` proves 25 things offline. It cannot prove anything that only exists
 inside TradingView: whether a symbol resolves, how far its history goes, whether
 `request.security_lower_tf()` returns intrabars, whether the `input.source()`
 picker can even see another indicator's plot, what the table looks like, or
@@ -75,8 +108,11 @@ pointed at another indicator's plot.
 | D4 | If D3 is no: add a community script that republishes aggregated funding and point the input at its plot | Funding row shows a raw rate, a percentile and a σ | ☐ |
 | D5 | Same for ETF net flow | ETF 5D row shows a compact notional and a percentile | ☐ |
 | D6 | Same for long and short liquidations, both wired | LONG LIQ, SHORT LIQ and LIQ BALANCE all populate; balance stays between −1 and +1 | ☐ |
-| D7 | Wire an adapter to a plot that stops updating (or a weekend-only series) | After 6 bars (funding, liquidations) or 30 bars (ETF), status flips to **STALE** and the readings stop | ☐ |
+| D7 | Wire an adapter to a plot that stops updating (or a weekend-only series) | After 6 bars (funding, liquidations) or 30 bars (ETF), status flips to **LIKELY STALE** and the readings stop. Note this is an update-activity heuristic — a legitimately constant live feed reads the same way | ☐ |
 | D8 | Semantic spot-check with real funding | When the raw funding rate is negative, the label says **SHORT FUNDING**, never LONG | ☐ |
+| D9 | **Funding unit.** Compare the FUNDING row against the exchange's published rate | They match. If the row is 100× or 10,000× off, change the Funding unit input — the σ and percentile are unaffected either way, which is exactly why a wrong unit is easy to miss | ☐ |
+| D10 | **ETF shape.** Look at the ETF plot on a 4H chart: does it step once a day or change every bar? | Set ETF source shape to match. A daily plot summed as per-bar increments reads exactly 6× too high | ☐ |
+| D11 | **Liquidation pairing.** Confirm both liquidation plots come from the same provider in the same unit | Only then tick "share one source and unit". Until you do, LIQ BALANCE reads DATA INCOMPARABLE — which is correct, not a fault | ☐ |
 
 D7 and D8 are verified offline against a substituted series (checks 11, 12, 1);
 what is manual is whether a real plot arrives through the picker at all.
@@ -87,7 +123,7 @@ what is manual is whether a real plot arrives through the picker at all.
 
 | # | Check | Expected | Result |
 |---|---|---|---|
-| E1 | Dashboard at default settings | Sections in order: RECENT EVENTS · WHAT CHANGED · CURRENT ANOMALIES · MARKET MECHANICS · TREND/VOLATILITY · DERIVATIVES · PARTICIPATION · FLOW · SLOW CONTEXT · DATA HEALTH | ☐ |
+| E1 | Dashboard at default settings | Sections in order: RECENT EVENTS · WHAT CHANGED · CURRENT ANOMALIES · MARKET MECHANICS · TREND/VOLATILITY · DERIVATIVES · PARTICIPATION · FLOW · SLOW CONTEXT · DATA HEALTH (timestamp-verified) · DATA HEALTH (external adapters) | ☐ |
 | E2 | Set **Max anomalies = 9**, all adapters live, wait for a busy bar | Nothing is clipped; the footer rows still render. Offline worst case measured 51 of 64 rows | ☐ |
 | E3 | Try each of the five table positions | No overlap with the price scale or the legend | ☐ |
 | E4 | Watch a live 4H bar form | RECENT EVENTS does **not** gain a row mid-bar; new rows appear only at the close | ☐ |
@@ -112,7 +148,8 @@ offline; PineTS has no implementation of `request.footprint()` at all.
 |---|---|---|---|
 | F1 | Paste `footprint-live.pine`, add to chart in its own pane | Compiles | ☐ |
 | F2 | On a lower plan | Record what actually happens — compile error, runtime error, or silent `na`. This determines whether the file is usable at all below Premium | ☐ |
-| F3 | Recent 4H bars | Delta columns plot; the readout shows buy/sell volume, delta, POC, VAH, VAL | ☐ |
+| F3 | Recent 4H bars | Delta columns plot; the readout shows CLASSIFIED buy/sell volume, volume delta, POC, VAH, VAL | ☐ |
+| F3b | Read the labels | Everything says "classified". Nothing implies an exchange aggressor tape — footprint classifies lower-timeframe intrabars, it does not report which side removed liquidity | ☐ |
 | F4 | Scroll back | `NO FOOTPRINT DATA` on older bars, no error | ☐ |
 | F5 | Watch a live bar, then reload the chart | The bar's delta **changes**. This is expected: TradingView documents footprint as repainting by design. Confirm it, then never use these numbers for anything historical | ☐ |
 

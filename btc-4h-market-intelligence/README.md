@@ -11,6 +11,17 @@ normalises each against its own recent history, and answers four questions:
 
 It does not tell you what will happen next, and it does not suggest what to do.
 
+> ### Status: CORE READY FOR MANUAL VALIDATION
+>
+> **Not ready for normal use.** 25 offline checks prove the logic is
+> self-consistent and says true things about the data it was given. They cannot
+> prove the script compiles on TradingView, that any symbol resolves, or that a
+> single number on the chart is what it claims. Core acceptance is **A1–A5,
+> B1–B7, C1, E1, E4, E6** in
+> [`TRADINGVIEW-VALIDATION.md`](./TRADINGVIEW-VALIDATION.md), plus the D checks
+> for each external adapter you actually enable. Until that list is complete this
+> is a script under validation, not a tool.
+
 - **License**: [MPL-2.0](../LICENSE) © tc3oliver
 - **Audits**: [`audit/AUDIT.md`](./audit/AUDIT.md)
 - **Manual checklist**: [`TRADINGVIEW-VALIDATION.md`](./TRADINGVIEW-VALIDATION.md)
@@ -81,7 +92,7 @@ LONG FUNDING     ⟹  funding  > 0        SHORT FUNDING    ⟹  funding  < 0
 POSITIVE PREMIUM ⟹  premium  > 0        NEGATIVE PREMIUM ⟹  premium  < 0
 ```
 
-Any violation fails the suite. Currently: **0 violations across 8,941 signed
+Any violation fails the suite. Currently: **0 violations across 8,846 signed
 bar-observations.**
 
 ### Why percentile is shown first
@@ -152,7 +163,7 @@ warn you.
 | FUNDING | are perp longs or shorts paying, and how unusually? | CONTEXT (adapter) |
 | PREMIUM | is the perp trading above or below spot, and how unusually? | IMPULSE |
 | LONG / SHORT LIQ | was there an unusual burst of forced closing on either side? | CONTEXT (adapter) |
-| LIQ BALANCE | which side is being liquidated more, on a −1…+1 scale? | CONTEXT (adapter) |
+| LIQ BALANCE | which side is being liquidated more, on a −1…+1 scale? **Only computed when you declare both feeds share a unit** | CONTEXT (adapter) |
 | SPOT / PERP RVOL | is volume unusual against the **same UTC slot** on prior days? | IMPULSE |
 | RELATIVE | is spot or perp unusually active relative to the other? | IMPULSE |
 | PERP / SPOT DELTA | estimated net up-bar vs down-bar volume inside the bar | ESTIMATED |
@@ -194,7 +205,7 @@ proves its JavaScript model reproduces the compiled Pine on all 13,164 bars:
 
 | measure | transitions | median label run | retention | detection delay |
 |---|---|---|---|---|
-| OI 24H | 2016 → **1784** | 2 → **3** | 100% | **0 bars** |
+| OI 24H | 2123 → **1879** | 2 → **3** | 100% | **0 bars** |
 | TREND | 223 → **169** | 5 → **9** | 99% | **0 bars** |
 
 The obvious alternative — requiring two consecutive bars — reaches similar
@@ -203,8 +214,8 @@ hours**.
 
 In v3 the ladder reads magnitude only, so a raw sign flip no longer resets it.
 The direction word has no hysteresis of its own, by design. The price of that
-was measured: **OI 24H's direction flips on 30 of 3,010 consecutive engaged bars
-(1.00%)** — small enough that the label does not rattle.
+was measured: **OI 24H's direction flips on 29 of 3,184 consecutive engaged bars
+(0.91%)** — small enough that the label does not rattle.
 
 ---
 
@@ -232,37 +243,108 @@ price and positioning did, together.
 
 ---
 
-## 6. Data health
+## 6. Data health — two vocabularies, because two different things are measured
 
-Every feed reports its own freshness, and anything below `1 BAR OLD` is treated
-as no data: no reading, no anomaly, no event, no alert.
+DATA HEALTH is split into two blocks, and they do not share words.
+
+### Timestamp-verified feeds
+
+Reference, spot, open interest, the daily 200MA and SOPR each return **their own
+bar time**, so the lag is measured. `request.security()` carries the last value
+forward when a symbol has no bar, which is indistinguishable from a fresh repeat
+unless the timestamps are compared — so they are.
 
 | status | meaning |
 |---|---|
 | `FRESH` | current |
 | `1 BAR OLD` / `1D OLD` | one period behind — normal for a daily feed |
-| `STALE` | present but too old to describe this bar; readings suppressed |
-| `MISCONFIGURED` | adapter enabled but still pointed at the chart's own close |
-| `UNAVAILABLE` | nothing there, or the adapter is off |
-
-Freshness for the exchange feeds is measured against the **bar timestamp the
-symbol actually returned**, not against whether the number changed —
-`request.security()` carries the last value forward when a symbol has no bar,
-which is indistinguishable from a fresh repeat unless you compare times.
-
-Policy, all in 4H bars:
+| `STALE` | measurably too old to describe this bar; readings suppressed |
+| `UNAVAILABLE` | nothing there |
 
 | feed | FRESH | OLD | STALE | why |
 |---|---|---|---|---|
 | reference, spot, OI | 0 bars behind | 1 | > 1 | exchange feeds on the chart's own timeframe; two bars of lag is an outage |
 | daily 200MA, SOPR | ≤ 2 days | ≤ 3 | > 3 | one day behind **by construction** — the non-repainting idiom requests the previous completed daily bar |
-| funding adapter | unchanged 0 bars | ≥ 1 | > 6 (24h) | settles every 8h = 2 bars |
-| ETF adapter | unchanged 0 bars | ≥ 1 | > 30 (5d) | daily and business-day only; a 3-day weekend is normal |
-| liquidation adapters | unchanged 0 bars | ≥ 1 | > 6 (24h) | should move most bars |
 
-An adapter that has not yet accumulated 50 bars of history reads
-`MISCONFIGURED`, not `FRESH` — it cannot yet be distinguished from the chart's
-own close, and an unproven adapter must not produce readings.
+### External adapters — an update-activity heuristic, not freshness
+
+An `input.source()` delivers a number and nothing else: **no upstream
+timestamp**. The only thing that can be observed is whether the number changed.
+So these rows report update activity, and the words never say "fresh":
+
+| status | what was actually observed |
+|---|---|
+| `ACTIVE` | the value moved on this bar |
+| `UNCHANGED 1 BAR` | it did not move on this bar |
+| `LIKELY STALE` | it has not moved for longer than the feed's own update period |
+| `MISCONFIGURED` | enabled but still pointed at the chart's own close |
+| `UNAVAILABLE` | the adapter is off |
+
+| adapter | LIKELY STALE after | why that period |
+|---|---|---|
+| funding | unchanged > 6 bars (24h) | settles every 8h = 2 bars |
+| ETF flow | unchanged > 30 bars (5d) | daily and business-day only; a 3-day weekend is normal |
+| liquidations | unchanged > 6 bars (24h) | should move most bars |
+
+**`LIKELY STALE` is not proof of anything.** A feed that is alive and
+legitimately repeating a value — funding pinned at the same rate, zero ETF flow
+on a public holiday, a quiet hour with no liquidations — is *indistinguishable*
+from a dead one through an `input.source()`. Readings are still suppressed at
+`LIKELY STALE`, because acting on a possibly-dead feed is worse than losing a
+possibly-live one, but that is a conservative choice and not a measurement. The
+test suite demonstrates the false positive rather than hiding it: a deliberately
+constant live feed is fed in and asserted to read `LIKELY STALE` (check 23).
+
+An adapter with fewer than 50 bars of history reads `MISCONFIGURED`, not
+`ACTIVE` — it cannot yet be distinguished from the chart's own close, and an
+unproven adapter must not produce readings.
+
+### What happens to a missing observation
+
+Pine's `ta.*` functions blank an entire window if any value in it is `na`, so a
+gap cannot simply be left as `na`. v3.0 used `nz()`, which substitutes **0**.
+That was wrong twice over, and the second way was serious:
+
+- On a *change* series, 0 means "no change" — a reading the market never
+  produced, injected into the distribution and understating its variance.
+- Worse, the open-interest change was formed as `oi / oi[1] − 1` with only the
+  **older** value checked for positivity. A zero open-interest tick therefore
+  produced **−100%**, and one −100% inside a 180-bar window inflates the rolling
+  standard deviation about 4.5×. That does not make the panel noisy. It makes it
+  **silent**.
+
+Measured on the Binance history — 12 zero-OI bars between 2022 and 2025:
+
+| full 13,164-bar history | outside the affected windows | inside them |
+|---|---|---|
+| bars | 12,405 | **747 (5.8% of history)** |
+| median rolling σ — **v3.0** | 0.0168 | **0.0765 — 4.5× inflated** |
+| OI 4H firing at \|z\| ≥ 1 — **v3.0** | 21.5% | **1.5%** |
+| median rolling σ — **v3.1** | 0.0168 | 0.0164 — **0.98×** |
+| OI 4H firing at \|z\| ≥ 1 — **v3.1** | 21.5% | **22.3%** |
+
+For 30 days after each bad tick, the radar under-reported open-interest
+anomalies by roughly 14× and nothing on screen said so. That is precisely the
+failure mode this project exists to avoid: **a plausible-looking display that is
+quietly wrong.**
+
+v3.1 fixes it in three places:
+
+1. **Both endpoints must be valid observations.** An observation counts only if
+   it is present, positive, base-unit, and timestamped to *this* bar rather than
+   carried forward by `request.security()`. A zero tick forms no change at all,
+   in either direction.
+2. **No `nz()` anywhere.** Missing values are carried forward from the last
+   *observed* value — which invents nothing — and stay `na` before the first
+   observation, so warm-up is honestly blank instead of anchored to a fake zero.
+3. **One filled series per measure**, built once and shared by the z-score and
+   the percentile, so the two always describe the same history.
+
+The contaminated windows are now statistically indistinguishable from the rest
+of the history, and the most extreme value the normalisation source ever sees is
+**−34.5%** — a real four-hour open-interest move — instead of −100%. The v3.0
+formula is kept inside the test suite as a control and must keep showing the
+damage, or the regression test has gone blind.
 
 ---
 
@@ -282,7 +364,7 @@ the widest and narrowest slot. It does not help:
 
 | variant | fires | false spikes | retention 1%/0.5%/0.1% | med delay | peak \|z\| | flip rate |
 |---|---|---|---|---|---|---|
-| **A** rolling 180 | 20.0% | **0.1%** (2) | 94% / 97% / 92% | 0 | 5.57 | 28.1% |
+| **A** rolling 180 | 21.2% | **0.1%** (2) | 97% / 98% / 92% | 0 | 5.57 | 29.7% |
 | B30 same-slot 30d | 25.2% | 8.6% (283) | 98% / 98% / 92% | 0 | 8.99 | 34.6% |
 | B60 same-slot 60d | 23.1% | 5.1% (153) | 98% / 98% / 92% | 0 | 7.61 | 31.7% |
 
@@ -290,7 +372,7 @@ A "false spike" is a fired bar whose raw |4H OI change| is **below the median**
 of the whole sample — the normaliser manufactured an unusual reading out of a
 smaller-than-typical move. A 30-day same-slot window contains ~30 observations,
 so its standard deviation is small and ordinary moves score high: false spikes
-rise from 2 to 283. The small retention gain (+4pp at the 1% tier) does not pay
+rise from 2 to 283. The small retention gain (+1pp at the 1% tier) does not pay
 for it.
 
 Both variants **REJECTED**. OI 4H keeps the rolling z-score and stays an
@@ -337,9 +419,9 @@ CHANGED:      ETF unusual inflow → unusual outflow
 
 REGIME and CONTEXT transitions only. An impulse has no previous state to have
 changed from, so listing one here would report noise as a transition. Fires on
-**14.6%** of bars.
+**15.3%** of bars.
 
-Worst case — 9 anomalies, 5 events, all four adapters live — uses **51 of 64**
+Worst case — 9 anomalies, 5 events, all four adapters live — uses **55 of 64**
 allocated table rows, and every cell write is bounds-guarded.
 
 ### Evidence levels
@@ -394,6 +476,24 @@ nothing".
 
 Open interest needs no adapter: it comes straight from the `_OI` service symbol.
 
+#### The adapter contract
+
+An `input.source()` carries a number and nothing else — no unit, no timestamp,
+no statement of what one observation represents. Every assumption the script
+would otherwise have to guess is an explicit input, and where an assumption
+cannot be checked the reading is **withheld rather than computed from a guess**.
+
+| input | why it exists | what goes wrong without it |
+|---|---|---|
+| **Funding unit** — decimal / percent / basis points | the z-score and percentile are scale-free, but the printed rate is not | the FUNDING row reads `+0.0002%` when the truth is `+0.02%`, and looks entirely plausible |
+| **ETF source shape** — daily value repeated / per-bar increment | ETF flow is published *daily*; a daily plot on a 4H chart is normally carried forward across all six bars of the day | summing 30 bars counts every day **six times**. Verified exactly 6× in check 24 |
+| **Liquidation pairing** — "both feeds share one source and unit" | `(long − short) / (long + short)` subtracts one feed from the other | two mismatched scales still land inside [−1, +1] and still look like a reading. Check 22 wires a 1,000,000× mismatch and shows 100% of bars landing in range, pinned at −1 |
+
+The pairing declaration defaults to **off**. With it off, LONG LIQ and SHORT LIQ
+still work — each is ranked against its own history, which needs no shared
+unit — but LIQ BALANCE reads `DATA INCOMPARABLE` and its value, percentile and
+σ are all withheld. Landing in range is arithmetic, not evidence.
+
 **Unconfirmed:** whether TradingView's own Fundamentals → Derivatives studies
 expose selectable plots. That is item D3 on the manual checklist.
 
@@ -406,8 +506,14 @@ documents footprint data as **repainting by design** — "in real time the chart
 may use one intrabar source (e.g. 1T) while the same bar is later recalculated
 using a less granular interval (e.g. 1S)".
 
-So it is marked **LIVE / DESCRIPTIVE ONLY — NOT HISTORICAL EVIDENCE**, has no
-alerts, and never enters the prospective event log. Putting the call inside
+`request.footprint()` splits a bar's volume by **classifying lower-timeframe
+intrabars**. It is not an exchange aggressor feed — nothing in it reports which
+side of each trade removed liquidity — so every label reads *classified buy
+volume*, *classified sell volume* and *volume delta*, and no wording implies a
+live aggressor tape.
+
+It is marked **LIVE / DESCRIPTIVE ONLY — CLASSIFIED, NOT AGGRESSOR — REPAINTS BY
+DESIGN**, has no alerts, and never enters the prospective event log. Putting the call inside
 `main.pine` would have made the Radar unusable below Premium and taken down the
 entire offline test suite in exchange for one feature that cannot be verified.
 
@@ -438,7 +544,7 @@ cd ../btc-4h-regime-engine/data && node fetch.mjs    # ~2,200 daily OI files, on
 cd ../../btc-4h-market-intelligence
 
 npm install
-npm test                             # 21 checks, 1500 bars
+npm test                             # 25 checks, 1500 bars
 node tests.mjs 6000                  # same suite, longer window
 
 node audit/extract-states.mjs        # run the frozen indicator over 13,164 bars
@@ -469,10 +575,14 @@ node audit/event-log.mjs             # prospective log, from the freeze forward
 | 14 | **market mechanics** | both axes carry the sign of their own raw 24h change; all four states occur |
 | 15 | **recent events** | buffer never exceeds 5, equals min(5, accepted pushes), never decreases, no adjacent duplicates |
 | 16 | alert structure | one `alert()` call site, inside `fire()`; all 20 `fire()` calls inside the confirmed block; no message repeats on consecutive bars |
-| 17 | **table capacity** | worst case uses 51 of 64 rows; all 13 sections render in priority order with no prescriptive label |
+| 17 | **table capacity** | worst case uses 55 of 64 rows; all 14 sections render in priority order with no prescriptive label |
 | 18 | z-scores | rolling z-scores are actually standardised |
 | 19 | **premium definition** | perp premium correlates with realised funding at **r = 0.63** (0.75 on the 24h mean) — as it must, since Binance derives funding from the premium index |
 | 20 | **cohort integrity** | changing any of {schema, freeze, indicator hash, config hash, threshold version} produces a different cohort and refuses the merge; all four routing branches covered |
+| 21 | **zero/missing OI contamination** | the 7 real zero-OI bars of 2024-07 form no change, produce no −100% artefact, and invent no value; σ inflation 1.01× and firing 28.3% inside vs 27.8% outside. The v3.0 formula runs alongside as a control and must keep showing 12.4× inflation and 0.0% firing, or the test has gone blind. Injected zeros cover the path on any dataset |
+| 22 | **liquidation paired-unit contract** | undeclared pairing withholds the balance, its σ and its percentile and prints DATA INCOMPARABLE; a 1,000,000× scale mismatch still lands 100% inside [−1,+1], which is why range is not treated as validity |
+| 23 | **freshness vocabularies do not mix** | adapter rows never say FRESH, timestamped rows never say ACTIVE, and a deliberately constant *live* feed is shown reading LIKELY STALE — the heuristic's false positive, demonstrated not hidden |
+| 24 | **adapter unit contracts** | funding declared in percent changes only the printed rate (exactly 100×) and leaves the z-score bit-identical; a daily-shaped ETF plot summed as increments comes out exactly 6× too large |
 
 The suite also asserts the harness's spot and reference series are genuinely
 different. PineTS strips exchange prefixes, so a chart symbol of `BTCUSDT`
@@ -525,8 +635,13 @@ prints which field moved. `--new-cohort` starts a separate file
 The failure this prevents is specific: a new version re-scanning the bars after
 an old freeze with new definitions, merging those rows into the old file, and
 producing something that *reads* as accumulated out-of-sample evidence while
-being a fresh in-sample fit. `event-log-v2-legacy.json` is the v2 cohort's file,
-kept and never merged — it recorded zero events before v3 replaced it.
+being a fresh in-sample fit.
+
+This has now happened twice for real. `event-log-v2-legacy.json` and
+`event-log-v3.0-legacy.json` are the retired cohorts, kept and never merged —
+both recorded zero events, because the dataset still ends before the freeze. The
+v3.1 refusal named all three fields that had moved (indicator hash, config hash,
+threshold version) before it declined to write.
 
 ---
 
@@ -551,11 +666,19 @@ kept and never merged — it recorded zero events before v3 replaced it.
   `footprint-live.pine`.
 - Daily feeds are always **one full day behind** by construction. Glassnode's own
   publication lag stacks on top.
-- Binance OI history has 12 bars at exactly zero between 2022 and 2025. The
-  script rejects them; a naive `oi/oi[1]-1` would read −100% and poison the
-  z-score window.
+- Binance OI history has 12 bars at exactly zero between 2022 and 2025. They
+  form no change in either direction and never reach the normalisation window.
+  v3.0 got this wrong and suppressed 93% of OI anomalies for 30 days after each
+  one; §6 has the measurement and check 21 is the regression guard.
+- **Missing values are carried forward, not interpolated or excluded.** Pine's
+  rolling functions cannot skip a bar, so a gap repeats the last observed value.
+  That invents nothing but does mildly deflate variance if gaps are frequent. On
+  this dataset gaps are 12 bars in 13,164.
+- **External adapter "staleness" is a heuristic** and is labelled as one. A live
+  feed repeating a legitimate value reads LIKELY STALE, and there is no way to
+  tell the difference through an `input.source()`.
 - **The direction axis has no hysteresis.** Measured, not assumed: OI 24H's
-  direction flips on 1.00% of consecutive engaged bars. Small, but not zero.
+  direction flips on 0.91% of consecutive engaged bars. Small, but not zero.
 - Spot and perp RVOL were classified IMPULSE **by analogy** with the
   participation ratio they compose, not separately audited.
 - **The intensity ladder is σ-driven while the displayed abnormality is a

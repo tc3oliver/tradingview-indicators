@@ -2,12 +2,12 @@
   "cohort": {
     "schema": 3,
     "freeze": "2026-09-06",
-    "indicatorHash": "83cc6c6cd09061fcb72f5d897db0b1515578e6a956f27b802504aac04f107018",
-    "configHash": "96c27211c3692e651cf5dae78d1e0731f9ea15e07412490d9599fa38f6c61689",
-    "thresholds": "v3.1",
-    "_inputCount": 47
+    "indicatorHash": "b81df8d80242b7f5e0d4219d4fec42f39ab3ede23d92b12adb49e9dbfd4a56a7",
+    "configHash": "1ceaeb89e383124be1544953c3c8993655c7ac0541ba573af027d993e289456d",
+    "thresholds": "v3.0",
+    "_inputCount": 44
   },
-  "cohortId": "1405b3b934c628e3059bcfd34de75ed8a68c629115716fb4a7cb75faa30aafa6",
+  "cohortId": "ca6103d874ac03e5badbdc1e34c378fb6ae14328330122346f8677f7ba78d718",
   "schema": 3,
   "freeze": "2026-09-06T00:00:00.000Z",
   "factFields": {

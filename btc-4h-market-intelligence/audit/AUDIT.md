@@ -7,12 +7,12 @@
 
 # V3 DATA-PRODUCT AUDIT
 
-**Indicator** `main.pine`, threshold version `v3.0`
+**Indicator** `main.pine`, threshold version `v3.1`
 **Window** 13,164 bars, 2020-09-01 → 2026-09-03
 **Reproduce**
 
 ```bash
-npm test                                # 21 offline checks
+npm test                                # 25 offline checks
 node audit/extract-states.mjs           # run the frozen indicator over the full window
 node audit/hysteresis-verify.mjs
 node audit/smoothing-audit.mjs
@@ -24,6 +24,111 @@ node audit/event-log.mjs
 > true things about the data. It establishes nothing about predictive value, and
 > no test in it computes a forward return. The evidence level of every state is
 > still DESCRIPTIVE.
+
+## 0. v3.1 — four defects found in review of v3.0
+
+All four had the same shape: **a display that looked reasonable and was wrong.**
+None of them threw an error, and none of them was visible from the chart.
+
+### 0.1 Zero-OI observations contaminated the normalisation window
+
+`oiChg = oi / oi[1] - 1` only checked that the *older* value was positive, so a
+zero open-interest tick produced **-100%**, and `nz()` fed it straight into a
+180-bar window. The result was not noise. It was silence:
+
+| full 13,164-bar history | outside the affected windows | inside them |
+|---|---|---|
+| bars | 12,405 | **747 (5.8% of the history)** |
+| median rolling sigma — v3.0 | 0.0168 | **0.0765 — 4.5x inflated** |
+| OI 4H firing at abs(z) >= 1 — v3.0 | 21.5% | **1.5%** |
+| median rolling sigma — **v3.1** | 0.0168 | 0.0164 — **0.98x** |
+| OI 4H firing at abs(z) >= 1 — **v3.1** | 21.5% | **22.3%** |
+
+Twelve bad ticks in the Binance history suppressed roughly 93% of the
+open-interest anomalies that should have fired over the following 30 days, and
+nothing on screen said so.
+
+**Fix.** Three changes: both endpoints of a change must be *valid observations*
+(present, positive, base-unit, and timestamped to this bar rather than carried
+forward); `nz()` is gone everywhere, replaced by carry-forward of the last
+observed value, which invents nothing; and one filled series per measure is
+built once and shared by the z-score and the percentile.
+
+**After.** The contaminated windows are statistically indistinguishable from the
+rest of the history, and the most extreme value the normalisation source ever
+sees is **-34.5%** — a real four-hour move — instead of -100%. The v3.0 formula
+is retained inside the test suite as a control and must keep showing the damage,
+or check 21 has gone blind.
+
+Side effect, recorded: with the variance no longer inflated, OI anomalies fire
+more often across the whole history. OI 24H engaged bars 3,750 -> 3,963, OI 4H
+2,627 -> 2,789, WHAT CHANGED 14.6% -> 15.3% of bars. No threshold was touched.
+
+### 0.2 LIQ BALANCE claimed to be unit-free
+
+The v3.0 comment read "unit-free so the two adapters need not share a scale".
+That is false. `(L - S) / (L + S)` is *dimensionless*, which is not the same
+thing — the subtraction is only meaningful between comparable quantities.
+Landing inside [-1, +1] is arithmetic, not validation.
+
+Demonstrated in check 22: with a 1,000,000x scale mismatch and pairing wrongly
+declared, **100% of bars still land inside [-1, +1]**, pinned at -1, and the row
+still looks like a reading.
+
+**Fix.** An explicit "both feeds share one source and unit" declaration,
+defaulting to **off**. Without it the balance, its percentile and its sigma are
+all withheld and the row reads `DATA INCOMPARABLE`. The individual LONG LIQ and
+SHORT LIQ rows are unaffected — each is ranked against its own history, which
+needs no shared unit.
+
+### 0.3 Adapter "freshness" was a heuristic wearing measured-freshness words
+
+Reference, spot, OI and SOPR return their own bar time, so their lag is
+measured. An `input.source()` returns a number and nothing else. v3.0 gave both
+the same vocabulary, so `FRESH` on a funding adapter was a claim the script
+could not support.
+
+**Fix.** Two vocabularies that do not share a word. Timestamp-verified feeds keep
+FRESH / 1 BAR OLD / 1D OLD / STALE. Adapters get **ACTIVE / UNCHANGED 1 BAR /
+LIKELY STALE / MISCONFIGURED / UNAVAILABLE**, and DATA HEALTH is split into two
+labelled blocks. Readings are still suppressed at LIKELY STALE — acting on a
+possibly-dead feed is worse than losing a possibly-live one — but that is stated
+as a conservative choice, not a measurement.
+
+The heuristic's false positive is **demonstrated rather than hidden**: check 23
+feeds in a deliberately constant *live* series and asserts it reads LIKELY
+STALE.
+
+### 0.4 Footprint terminology implied an aggressor tape
+
+`request.footprint()` classifies lower-timeframe intrabars. It does not report
+which side of a trade removed liquidity. The heading `LIVE ORDER FLOW` implied
+otherwise.
+
+**Fix.** `LIVE FOOTPRINT`, `Classified buy volume`, `Classified sell volume`,
+`Volume delta`, and an evidence line reading `LIVE / DESCRIPTIVE ONLY —
+CLASSIFIED, NOT AGGRESSOR — REPAINTS BY DESIGN`. No user-visible string in the
+file uses order-flow wording, and a test asserts that.
+
+### 0.5 Adapter contracts formalised
+
+An `input.source()` carries no unit and no statement of what one observation
+represents, so both were made explicit inputs rather than silent assumptions:
+
+| assumption | now | failure it prevents |
+|---|---|---|
+| funding unit | decimal / percent / basis points, canonicalised to a decimal fraction | the printed rate off by 100x while sigma and percentile — which are scale-free — look perfect |
+| ETF source shape | daily value repeated within the day, or per-bar increment | summing 30 bars counts every day **six times**. Verified exactly 6x in check 24 |
+| liquidation pairing | explicit declaration, default off | see 0.2 |
+
+### 0.6 A test was matching the wrong rows
+
+The dashboard section-order check searched for the bare word `FLOW`, which also
+appears in an anomaly line reading `ETF 5D UNUSUAL INFLOW`. It was matching an
+anomaly row and calling it the FLOW header. Now it matches full section headers.
+Recorded because a test that passes for the wrong reason is worse than no test.
+
+---
 
 ## 1. Semantic correctness — the defect that made v3 necessary
 
@@ -40,10 +145,10 @@ the σ ladder. Eight invariants are asserted on every bar:
 | OI 24H EXPANSION ⟹ oiChg24h > 0, REDUCTION ⟹ < 0 | 1,494 | **0** |
 | OI 4H EXPANSION / REDUCTION | 1,499 | **0** |
 | POSITIVE / NEGATIVE PREMIUM ⟹ sign(premium) | 1,500 | **0** |
-| LONG / SHORT FUNDING ⟹ sign(funding) | 1,480 | **0** |
-| ETF INFLOW / OUTFLOW ⟹ sign(etf5d) | 1,470 | **0** |
-| LIQ BALANCE MORE LONG / SHORT ⟹ sign(balance) | 1,498 | **0** |
-| **total** | **8,941** | **0** |
+| LONG / SHORT FUNDING ⟹ sign(funding) | 1,451 | **0** |
+| ETF INFLOW / OUTFLOW ⟹ sign(etf5d) | 1,451 | **0** |
+| LIQ BALANCE MORE LONG / SHORT ⟹ sign(balance) | 1,451 | **0** |
+| **total** | **8,846** | **0** |
 
 Trend and SOPR are separate: their raw value *is* the deviation, so the state
 sign equals the raw sign by construction. Asserted rather than assumed —
@@ -60,7 +165,7 @@ The direction axis has no hysteresis, by design. Measured, not assumed:
 
 | measure | consecutive engaged bars | direction flips | rate |
 |---|---|---|---|
-| OI 24H | 3,010 | 30 | **1.00%** |
+| OI 24H | 3,184 | 29 | **0.91%** |
 
 Small enough that the label does not rattle. Recorded because it is a real
 property of the design and could have gone the other way.
@@ -99,7 +204,7 @@ bars before any number is reported — **identical on every bar**, both measures
 
 | measure | transitions raw → schmitt | median label run | retention | median delay |
 |---|---|---|---|---|
-| OI 24H | 2016 → 1784 (−12%) | 2 → **3** | 100% | **0** |
+| OI 24H | 2123 → 1879 (−11%) | 2 → **3** | 100% | **0** |
 | TREND | 223 → 169 (−24%) | 5 → **9** | 99% | **0** |
 
 Two-bar confirmation reaches similar stability only by losing 20% of events and
@@ -134,7 +239,7 @@ between the widest and narrowest slot, so the question was worth asking.
 
 | variant | fires | false spikes | retention 1% / 0.5% / 0.1% | med delay | peak \|z\| | flip rate |
 |---|---|---|---|---|---|---|
-| **A** rolling 180 | 20.0% | **0.1%** (2) | 94% / 97% / 92% | 0 | 5.57 | 28.1% |
+| **A** rolling 180 | 21.2% | **0.1%** (2) | 97% / 98% / 92% | 0 | 5.57 | 29.7% |
 | B30 same-slot 30d | 25.2% | 8.6% (283) | 98% / 98% / 92% | 0 | 8.99 | 34.6% |
 | B60 same-slot 60d | 23.1% | 5.1% (153) | 98% / 98% / 92% | 0 | 7.61 | 31.7% |
 
@@ -147,7 +252,7 @@ between the widest and narrowest slot, so the question was worth asking.
 | **verdict** | **REJECT** | **REJECT** |
 
 A 30-day same-slot window holds ~30 observations, so its standard deviation is
-small and ordinary moves score high: false spikes rise from 2 to 283. The +4pp
+small and ordinary moves score high: false spikes rise from 2 to 283. The +1pp
 retention gain at the 1% tier does not pay for that. **OI 4H keeps the rolling
 z-score and stays an IMPULSE.** Nothing was re-tuned after seeing these numbers.
 
@@ -169,7 +274,7 @@ the times are compared.
 ## 8. Table capacity
 
 Worst case — 9 anomalies, 5 events, all four adapters live — measured at
-**51 of 64** allocated rows. Every cell write is bounds-guarded, so exceeding
+**55 of 64** allocated rows. Every cell write is bounds-guarded, so exceeding
 capacity would drop rows rather than corrupt the table. Section order is
 asserted against the specification.
 
@@ -195,6 +300,9 @@ is kept unmerged.
 | item | status |
 |---|---|
 | same-slot OI 4H normalisation | **REJECTED** by its own pre-registered rule |
+| missing-value handling | carry-forward, which invents nothing but mildly deflates variance if gaps are frequent. Not interpolation, not exclusion — Pine's rolling functions cannot skip a bar |
+| adapter staleness | an **update-activity heuristic**, not a measurement. A live feed repeating a legitimate value is indistinguishable from a dead one |
+| liquidation pairing | **declared, never verified.** The script cannot check that two `input.source()` plots share a unit; it can only refuse to compute until you say they do |
 | σ ladder vs percentile display | known inconsistency, documented, not resolved |
 | spot / perp RVOL product shape | classified IMPULSE **by analogy**, never separately audited |
 | direction-axis hysteresis | none by design; the 1.00% flip rate is the cost |

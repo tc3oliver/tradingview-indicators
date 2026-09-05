@@ -4,6 +4,66 @@ Paste-ready release notes for TradingView. Newest first.
 
 ---
 
+## v3.1 — four correctness fixes found in review
+
+No new features. Every change below removes a way the panel could display
+something plausible and wrong.
+
+### Fixed
+
+- **Zero/missing open-interest observations no longer contaminate
+  normalisation.** `oi / oi[1] - 1` only checked the *older* value for
+  positivity, so a zero OI tick produced −100%, and `nz()` fed it into a 180-bar
+  window. One −100% inflated the rolling σ ~4.5×, which did not make the panel
+  noisy — it made it silent. Measured on the Binance history: **747 bars, 5.8%
+  of it, OI 4H firing rate 21.5% → 1.5%.** Now both endpoints of a change must
+  be valid observations (present, positive, base-unit, timestamped to this bar),
+  `nz()` is gone everywhere in favour of carry-forward of the last *observed*
+  value, and one filled series per measure is shared by the z-score and the
+  percentile. After, on the same full history: σ **0.98×**, firing **22.3% inside
+  vs 21.5% outside**, and the worst value the normaliser ever sees is −34.5%
+  instead of −100%. With the variance no longer inflated, OI anomalies fire more
+  often overall (OI 24H engaged bars 3,750 → 3,963) — no threshold was changed.
+- **LIQ BALANCE no longer claims to be unit-free.** `(L−S)/(L+S)` is
+  dimensionless, not unit-free — the subtraction needs comparable quantities.
+  A new "both feeds share one source and unit" declaration defaults to **off**;
+  without it the balance, percentile and σ are withheld and the row reads
+  `DATA INCOMPARABLE`. A 1,000,000× scale mismatch still lands 100% inside
+  [−1,+1], which is why range was never a validity check.
+- **External adapter freshness is no longer worded as measured freshness.**
+  DATA HEALTH is split in two. Timestamp-verified feeds keep FRESH / 1 BAR OLD /
+  1D OLD / STALE. `input.source()` adapters get **ACTIVE / UNCHANGED 1 BAR /
+  LIKELY STALE / MISCONFIGURED / UNAVAILABLE** — update activity, which is the
+  only thing observable without an upstream timestamp. Readings are still
+  suppressed at LIKELY STALE as a conservative choice, and the false positive
+  (a live but constant feed) is demonstrated in the test suite, not hidden.
+- **Footprint terminology.** `LIVE ORDER FLOW` → `LIVE FOOTPRINT`, with
+  `Classified buy volume`, `Classified sell volume` and `Volume delta`.
+  `request.footprint()` classifies lower-timeframe intrabars; it does not report
+  which side removed liquidity. No user-visible string implies an aggressor tape.
+- **A test that matched the wrong rows.** The section-order check searched for
+  the bare word `FLOW`, which also appears in `ETF 5D UNUSUAL INFLOW`.
+
+### Added — contracts, not features
+
+- **Funding unit** input (decimal / percent / basis points), canonicalised to a
+  decimal fraction. σ and percentile are scale-free, so a wrong unit was
+  invisible everywhere except the printed rate.
+- **ETF source shape** input (daily value repeated / per-bar increment). ETF
+  flow is published daily; a daily plot carried across six 4H bars and summed as
+  30 increments reads exactly **6×** too high.
+- Four new regression checks (21–24), bringing the offline suite to **25**. The
+  zero-OI check runs the v3.0 formula alongside as a control and fails if that
+  control ever stops showing the damage.
+
+### Status
+
+**CORE READY FOR MANUAL VALIDATION**, not ready for normal use. Core acceptance
+is A1–A5, B1–B7, C1, E1, E4, E6 in `TRADINGVIEW-VALIDATION.md`, plus the D
+checks for each adapter actually enabled.
+
+---
+
 ## v3 — fix semantics, add operational intelligence
 
 **This version exists because v2 could print a false statement about the data.**
@@ -51,20 +111,22 @@ change printed as EXPANDING**. Two axes had been fused into one number.
   economics. The replacement is the one pairing that has a definition rather than
   a vote: price direction × position direction over the same 24 hours.
 - **Long and short liquidation adapters**, each with its own enable toggle,
-  source, freshness, percentile, spike detection and alert, plus a unit-free
-  LIQ BALANCE. Spikes fire on the upper tail only — a quiet bar is not
-  "unusually few liquidations".
-- **DATA HEALTH** — nine feeds, each showing FRESH / 1 BAR OLD / 1D OLD / STALE /
-  MISCONFIGURED / UNAVAILABLE, with alerts on becoming stale and on recovering.
-  Freshness is measured against the bar timestamp the symbol actually returned,
-  not against whether the number changed.
+  source, freshness, percentile, spike detection and alert, plus a LIQ BALANCE
+  described at the time as "unit-free" — **wrong, corrected in v3.1 above**.
+  Spikes fire on the upper tail only — a quiet bar is not "unusually few
+  liquidations".
+- **DATA HEALTH** — nine feeds with alerts on becoming stale and on recovering.
+  Timestamped feeds are measured against the bar time the symbol returned; the
+  four `input.source()` adapters were given the same words, which **overstated
+  what could be measured — corrected in v3.1 above**.
 - **WHAT CHANGED** regrouped into NEW / NORMALIZED / CHANGED, and now fires on a
   direction change at unchanged intensity.
 - **12-week momentum** row.
-- `footprint-live.pine` — a **separate**, optional, Premium-only companion for
-  live order flow, marked LIVE / DESCRIPTIVE ONLY. TradingView documents
-  footprint data as repainting by design, so it has no alerts and never enters
-  the prospective event log.
+- `footprint-live.pine` — a **separate**, optional, Premium-only companion,
+  marked LIVE / DESCRIPTIVE ONLY. TradingView documents footprint data as
+  repainting by design, so it has no alerts and never enters the prospective
+  event log. Its heading said "order flow", which **implied an aggressor tape it
+  does not have — corrected in v3.1 above**.
 
 ### Renamed
 

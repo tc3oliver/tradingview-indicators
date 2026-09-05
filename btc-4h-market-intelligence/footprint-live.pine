@@ -2,12 +2,22 @@
 // © tc3oliver
 
 //@version=6
-indicator("BTC 4H Market Radar — Footprint (LIVE, DESCRIPTIVE ONLY)", overlay = false, max_labels_count = 20)
+indicator("BTC 4H Market Radar — Live Footprint (DESCRIPTIVE ONLY)", overlay = false, max_labels_count = 20)
 
 // ============================================================================
 // THIS IS A SEPARATE FILE ON PURPOSE. Read this before adding it to a chart.
 //
 // LIVE / DESCRIPTIVE ONLY — NOT HISTORICAL EVIDENCE
+//
+// WHAT "BUY" AND "SELL" MEAN HERE, AND WHAT THEY DO NOT
+// request.footprint() splits a bar's volume by CLASSIFYING lower-timeframe
+// intrabars. It is not an exchange aggressor feed: nothing in it reports which
+// side of each trade removed liquidity. So the two totals are CLASSIFIED buy
+// and sell volume, and volume delta is the difference between two classified
+// totals. Every user-visible label says "classified" for that reason, and none
+// of them uses wording that would imply a live aggressor tape — a
+// classification and an aggressor tape are different measurements, and only one
+// of them exists here.
 //
 // TradingView's own documentation states that footprint data REPAINTS BY
 // DESIGN: "in real time the chart may use one intrabar source (e.g. 1T) while
@@ -21,7 +31,7 @@ indicator("BTC 4H Market Radar — Footprint (LIVE, DESCRIPTIVE ONLY)", overlay 
 //      script that calls it is unusable to everyone else. The Radar must run
 //      for anyone, so the call cannot sit in it — Pine has no way to compile a
 //      function call away behind an input toggle.
-//   2. PineTS, the offline runtime the Radar's 21-check test suite runs on, has
+//   2. PineTS, the offline runtime the Radar's 25-check test suite runs on, has
 //      no implementation of request.footprint(). Putting the call in main.pine
 //      would take down every offline test and every audit in one move, trading
 //      a fully verified core for one unverifiable feature.
@@ -49,6 +59,7 @@ footprint fp = request.footprint(ticksPerRow, vaPct, imbPct)
 // tick-by-tick volume. Everything below is guarded on it.
 avail = not na(fp)
 
+// Classified totals, not aggressor totals. See the header.
 float buyVol  = avail ? fp.buy_volume()  : na
 float sellVol = avail ? fp.sell_volume() : na
 float delta   = avail ? fp.delta()       : na
@@ -71,9 +82,9 @@ if avail
     if not na(val)
         valDn := val.down_price()
 
-plot(delta,  "Volume delta", color = delta > 0 ? color.new(color.teal, 20) : color.new(color.red, 20), style = plot.style_columns)
-plot(buyVol, "Buy volume",   color = color.new(color.teal, 70), display = display.data_window)
-plot(sellVol, "Sell volume", color = color.new(color.red, 70), display = display.data_window)
+plot(delta,  "Volume delta (classified)", color = delta > 0 ? color.new(color.teal, 20) : color.new(color.red, 20), style = plot.style_columns)
+plot(buyVol, "Classified buy volume",   color = color.new(color.teal, 70), display = display.data_window)
+plot(sellVol, "Classified sell volume", color = color.new(color.red, 70), display = display.data_window)
 hline(0, "zero", color = color.new(color.gray, 60))
 
 f2(x) => na(x) ? "n/a" : str.tostring(x, "#.##")
@@ -89,14 +100,14 @@ var table t = na
 if showTable and barstate.islast
     table.delete(t)
     t := table.new(position.bottom_left, 2, 8, border_width = 1, border_color = color.new(color.gray, 70))
-    row(t, 0, "LIVE ORDER FLOW", avail ? "FOOTPRINT AVAILABLE" : "NO FOOTPRINT DATA", avail ? color.new(color.blue, 30) : color.new(color.gray, 30))
-    row(t, 1, "Buy volume",  f2(buyVol),  color.new(color.teal, 60))
-    row(t, 2, "Sell volume", f2(sellVol), color.new(color.red, 60))
-    row(t, 3, "Delta",       f2(delta) + "  " + pc(deltaPc), na(delta) ? color.new(color.gray, 50) : delta > 0 ? color.new(color.teal, 40) : color.new(color.red, 40))
+    row(t, 0, "LIVE FOOTPRINT", avail ? "FOOTPRINT AVAILABLE" : "NO FOOTPRINT DATA", avail ? color.new(color.blue, 30) : color.new(color.gray, 30))
+    row(t, 1, "Classified buy volume",  f2(buyVol),  color.new(color.teal, 60))
+    row(t, 2, "Classified sell volume", f2(sellVol), color.new(color.red, 60))
+    row(t, 3, "Volume delta",  f2(delta) + "  " + pc(deltaPc), na(delta) ? color.new(color.gray, 50) : delta > 0 ? color.new(color.teal, 40) : color.new(color.red, 40))
     row(t, 4, "POC",         na(pocDn) ? "n/a" : f2(pocDn) + " – " + f2(pocUp), color.new(color.orange, 45))
     row(t, 5, "VAH",         f2(vahUp), color.new(color.gray, 55))
     row(t, 6, "VAL",         f2(valDn), color.new(color.gray, 55))
-    row(t, 7, "EVIDENCE",    "LIVE / DESCRIPTIVE ONLY — REPAINTS BY DESIGN", color.new(color.red, 45))
+    row(t, 7, "EVIDENCE",    "LIVE / DESCRIPTIVE ONLY — CLASSIFIED, NOT AGGRESSOR — REPAINTS BY DESIGN", color.new(color.red, 45))
 
 // No alerts. A repainting series must not be able to wake anyone up, and it
 // must never enter the prospective event log — see audit/event-log.mjs, whose

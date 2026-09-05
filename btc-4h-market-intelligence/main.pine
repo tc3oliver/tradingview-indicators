@@ -4,7 +4,7 @@
 //@version=6
 indicator("BTC 4H Market Radar", overlay = true, max_bars_back = 2500)
 
-// THRESHOLD-VERSION: v3.0
+// THRESHOLD-VERSION: v3.1
 // Bump this whenever a threshold, window or state DEFINITION changes in a way
 // that alters what an event means. It is one of the five fields that identify a
 // prospective cohort (audit/cohort.mjs); events recorded under a different
@@ -92,14 +92,22 @@ oiSym   = input.symbol("BINANCE:BTCUSDT.P_OI", "Open interest",             grou
 soprSym = input.symbol("GLASSNODE:BTC_SOPR",   "SOPR",                      group = G_SYM)
 
 G_EXT = "External data — point at another indicator's plot"
+// ADAPTER CONTRACT. An input.source() carries a number and nothing else — no
+// unit, no timestamp, no statement of what one observation represents. Every
+// assumption the script would otherwise have to guess is an explicit input, and
+// where the assumption cannot be checked the reading is withheld rather than
+// computed from a guess.
 useFunding = input.bool(false, "Enable funding adapter",        group = G_EXT)
 extFunding = input.source(close, "  Aggregated funding rate",   group = G_EXT, tooltip = "Reads DATA UNAVAILABLE until enabled AND wired to a plot other than the chart's close.")
+fundUnit   = input.string("Decimal (0.0001 = 0.01%)", "  Funding unit", options = ["Decimal (0.0001 = 0.01%)", "Percent (0.01 = 0.01%)", "Basis points (1 = 0.01%)"], group = G_EXT, tooltip = "The z-score and percentile do not care about scale, but the printed rate does. Get this wrong and the FUNDING row is off by 100x while still looking plausible.")
 useEtf     = input.bool(false, "Enable ETF flow adapter",       group = G_EXT)
-extEtf     = input.source(close, "  US spot BTC ETF net flow",  group = G_EXT, tooltip = "Per-bar net flow. The script sums five days of it.")
+extEtf     = input.source(close, "  US spot BTC ETF net flow",  group = G_EXT)
+etfShape   = input.string("Daily value, repeated within the day", "  ETF source shape", options = ["Daily value, repeated within the day", "Per-bar increment"], group = G_EXT, tooltip = "ETF flow is published DAILY. On a 4H chart a daily plot is normally carried forward across all six bars of the day, so summing 30 bars counts every day six times. Pick 'Daily value' and the 5-day total samples one bar per day instead. Pick 'Per-bar increment' only if each 4H bar genuinely carries its own separate flow.")
 useLiqL    = input.bool(false, "Enable long-liquidation adapter",  group = G_EXT)
-extLiqL    = input.source(close, "  Long liquidations",         group = G_EXT, tooltip = "Notional or contracts, either is fine — only its own percentile is read.")
+extLiqL    = input.source(close, "  Long liquidations",         group = G_EXT, tooltip = "Notional or contracts — for the LONG LIQ row itself either is fine, because only its own percentile is read.")
 useLiqS    = input.bool(false, "Enable short-liquidation adapter", group = G_EXT)
 extLiqS    = input.source(close, "  Short liquidations",        group = G_EXT)
+liqPaired  = input.bool(false, "  Long and short liquidations share one source and unit", group = G_EXT, tooltip = "LIQ BALANCE is (long - short) / (long + short). That subtraction is only meaningful if both inputs are the same quantity, in the same unit, from the same provider. Landing in [-1, +1] proves nothing — two unrelated scales also land in [-1, +1]. Leave this OFF unless you know both plots match; the balance then reads DATA INCOMPARABLE instead of inventing a number.")
 
 G_CFG = "Normalisation windows"
 zWin      = input.int(180,  "Percentile / z lookback (bars)",  minval = 30, maxval = 1000, group = G_CFG, tooltip = "180 bars = 30 days at 4H. Used for BOTH the empirical percentile and the z-score, so the two always describe the same window.")
@@ -210,11 +218,23 @@ spotDelta = flowOK ? arrSum(spotUp) - arrSum(spotDn) : na
 //   daily 200MA             1 day behind BY CONSTRUCTION (previous completed
 //                           daily bar). <=2d FRESH, <=3d OLD, >3d STALE.
 //   SOPR                    same, plus Glassnode's own publication lag.
+//
+// The four input.source() adapters are a DIFFERENT KIND OF MEASUREMENT and get
+// a different vocabulary. They carry no upstream timestamp, so the only thing
+// observable is whether the number changed. A live feed that legitimately
+// repeats a value — funding pinned at the same rate, zero ETF flow on a holiday,
+// a quiet hour with no liquidations — is indistinguishable from a dead one. So
+// they report UPDATE ACTIVITY, not freshness, and the words say so:
+//   ACTIVE / UNCHANGED 1 BAR / LIKELY STALE / MISCONFIGURED / UNAVAILABLE
+// Readings are still suppressed at LIKELY STALE, because acting on a possibly
+// dead feed is worse than losing a possibly live one. That is a conservative
+// choice, not a proof that the feed is dead.
 //   funding adapter         settles every 8h = 2 bars. Unchanged >6 bars (24h)
-//                           means the source stopped updating.
+//                           is LIKELY STALE.
 //   ETF adapter             daily and business-day only, so a 3-day weekend is
-//                           normal. Unchanged >30 bars (5 days) is STALE.
-//   liquidation adapters    should move most bars. Unchanged >6 bars is STALE.
+//                           normal. Unchanged >30 bars (5 days) is LIKELY STALE.
+//   liquidation adapters    should move most bars. Unchanged >6 bars is LIKELY
+//                           STALE.
 BARS_STALE_FUNDING = 6
 BARS_STALE_ETF     = 30
 BARS_STALE_LIQ     = 6
@@ -242,6 +262,12 @@ oiCurSaysNotional = not na(oiCur) and (oiCur == "USD" or oiCur == "USDT" or oiCu
 oiLooksNotional = oiCurSaysNotional or (not na(oiRaw) and oiRaw > 5e6)
 oiPresent = not na(oiRaw) and oiRaw > 0 and not oiLooksNotional
 oiStat    = statOf4H(oiPresent, barsBehind(oiT))
+
+// A VALID OBSERVATION is stricter than "the feed is usable". It means this bar
+// carries its own open-interest reading: present, positive, base-unit, and
+// timestamped to this bar rather than a value request.security carried forward.
+// Only two valid observations may be subtracted from each other.
+oiObs = oiPresent and barsBehind(oiT) == 0
 
 refOK   = refStat >= 3
 spotOK  = spotStat >= 3
@@ -272,6 +298,16 @@ onChartClose(src) =>
     // yet proved itself must not produce readings.
     na(h) or h <= 0
 
+// Canonical funding: a decimal fraction per settlement, whatever the plot uses.
+// Scale never reaches the z-score or the percentile — both are scale-free — but
+// it is the whole of the printed rate.
+fundScale = fundUnit == "Percent (0.01 = 0.01%)" ? 0.01 : fundUnit == "Basis points (1 = 0.01%)" ? 0.0001 : 1.0
+fundCanon = extFunding * fundScale
+etfDailyMode = etfShape == "Daily value, repeated within the day"
+
+// staleBars() and onChartClose() read the RAW input, before canonicalisation:
+// the wiring test compares against the chart's close, and a positive rescale
+// cannot change whether a value moved.
 fdHeld = staleBars(extFunding)
 etHeld = staleBars(extEtf)
 lLHeld = staleBars(extLiqL)
@@ -336,6 +372,29 @@ pct4(x) => na(x) ? "n/a" : (x >= 0 ? "+" : "") + str.tostring(x * 100, "#.####")
 big(x) =>
     a = na(x) ? 0.0 : math.abs(x)
     na(x) ? "n/a" : a >= 1e9 ? str.tostring(x / 1e9, "#.##") + "B" : a >= 1e6 ? str.tostring(x / 1e6, "#.##") + "M" : a >= 1e3 ? str.tostring(x / 1e3, "#.##") + "K" : str.tostring(x, "#.##")
+
+// MISSING-VALUE POLICY for everything that feeds a rolling window.
+//
+// Pine's ta.* functions return na for the whole window if any value in it is
+// na, so a gap cannot simply be left as na — the reading would blank for 180
+// bars. v3.0 used nz(), which substitutes 0. That was wrong twice over:
+//   - on a CHANGE series, 0 is "no change", a real reading the market never
+//     produced, and injecting it understates variance;
+//   - worse, a zero open-interest tick produced a genuine -100% change, and one
+//     -100% in a 180-bar window inflated the rolling standard deviation 4.5x,
+//     which silently suppressed 93% of the OI anomalies that should have fired
+//     over the following 30 days. Measured on the Binance history: 747 bars,
+//     5.8% of it, firing rate 21.5% -> 1.5%.
+//
+// Carrying the last OBSERVED value forward adds no information but invents
+// none either. Before the first observation it stays na, so the warm-up is
+// honestly blank rather than anchored to a made-up zero.
+// Per-call-site `var`: call each site exactly once, unconditionally.
+holdLast(x) =>
+    var float last = na
+    if not na(x)
+        last := x
+    last
 
 // The direction axis. Nothing else is allowed to decide a direction word.
 dirOf(x) =>
@@ -415,8 +474,11 @@ trendDist = dailyOK and refOK and atr14 > 0 ? (rC - dSma200) / atr14 : na
 // 24H price change on the reference series. The left half of MARKET MECHANICS.
 px24 = refOK and not na(rC[BARS_PER_DAY]) and rC[BARS_PER_DAY] > 0 ? rC / rC[BARS_PER_DAY] - 1 : na
 
-oiChg4hRaw  = not na(oiRaw) and not na(oiRaw[1]) and oiRaw[1] > 0 ? oiRaw / oiRaw[1] - 1 : na
-oiChg24hRaw = not na(oiRaw) and not na(oiRaw[BARS_PER_DAY]) and oiRaw[BARS_PER_DAY] > 0 ? oiRaw / oiRaw[BARS_PER_DAY] - 1 : na
+// BOTH endpoints must be valid observations. The v3.0 guard only checked that
+// the OLDER value was positive, so a zero tick on the current bar produced
+// 0/x - 1 = -100% and fed it straight into the normalisation window.
+oiChg4hRaw  = oiObs and oiObs[1] ? oiRaw / oiRaw[1] - 1 : na
+oiChg24hRaw = oiObs and oiObs[BARS_PER_DAY] ? oiRaw / oiRaw[BARS_PER_DAY] - 1 : na
 oiChg4h  = oiOK ? oiChg4hRaw : na
 oiChg24h = oiOK ? oiChg24hRaw : na
 
@@ -435,42 +497,69 @@ partOK   = not na(rvolSpot) and not na(rvolPerp) and rvolPerp > 0 and rvolSpot >
 partRawU = not na(rvolSpotRaw) and not na(rvolPerpRaw) and rvolSpotRaw > 0 and rvolPerpRaw > 0 ? math.log(rvolSpotRaw / rvolPerpRaw) : na
 partRaw  = partOK ? partRawU : na
 
-etf5dRaw = math.sum(extEtf, BARS_PER_DAY * 5)
-etf5d    = etfOK ? etf5dRaw : na
+// Five days of ETF flow, computed to match what one observation of the source
+// actually represents. Both forms are evaluated unconditionally and one is
+// selected, so math.sum's window never has a hole in it.
+etfIncr5  = math.sum(extEtf, BARS_PER_DAY * 5)
+etfDaily5 = extEtf + extEtf[BARS_PER_DAY] + extEtf[BARS_PER_DAY * 2] + extEtf[BARS_PER_DAY * 3] + extEtf[BARS_PER_DAY * 4]
+etf5dRaw  = etfDailyMode ? etfDaily5 : etfIncr5
+etf5d     = etfOK ? etf5dRaw : na
 soprDevU = not na(soprD) ? soprD - 1.0 : na
 soprDev  = soprOK ? soprDevU : na
 
-// Liquidation balance, unit-free so the two adapters need not share a scale.
+// Liquidation balance. The ratio is dimensionless, which is NOT the same as
+// unit-free: (L - S) / (L + S) subtracts one feed from the other, so it means
+// something only when both are the same quantity, in the same unit, from the
+// same provider. Two mismatched scales also land inside [-1, +1] and look
+// perfectly reasonable. So the pairing has to be declared, and without the
+// declaration the balance is not computed at all.
 liqSum   = (na(extLiqL) ? 0.0 : extLiqL) + (na(extLiqS) ? 0.0 : extLiqS)
 liqBalU  = liqSum > 0 ? ((na(extLiqL) ? 0.0 : extLiqL) - (na(extLiqS) ? 0.0 : extLiqS)) / liqSum : na
-liqBal   = liqOK ? liqBalU : na
+liqBalOK = liqLOK and liqSOK and liqPaired
+liqBal   = liqBalOK ? liqBalU : na
 
 // -------------------------------------- 6. normalisation: percentile and z ---
 // Computed unconditionally, masked afterwards. Same window for both, so the
 // rank and the σ always describe the same history.
-oiZ4U   = zOf(nz(oiChg4hRaw), zWin)
-oiZ24U  = zOf(nz(oiChg24hRaw), zWin)
-oiP4U   = pctOf(nz(oiChg4hRaw), zWin)
-oiP24U  = pctOf(nz(oiChg24hRaw), zWin)
-premZU  = zOf(nz(premiumRaw), zWin)
-premPU  = pctOf(nz(premiumRaw), zWin)
-partZU  = zOf(nz(partRawU), zWin)
-partPU  = pctOf(nz(partRawU), zWin)
-rvSpZU  = zOf(nz(rvolSpotRaw), zWin)
-rvSpPU  = pctOf(nz(rvolSpotRaw), zWin)
-rvPpZU  = zOf(nz(rvolPerpRaw), zWin)
-rvPpPU  = pctOf(nz(rvolPerpRaw), zWin)
-fundZU  = zOf(nz(extFunding), zWin)
-fundPU  = pctOf(nz(extFunding), zWin)
-etfZU   = zOf(nz(etf5dRaw), zWin)
-etfPU   = pctOf(nz(etf5dRaw), zWin)
-liqLZU  = zOf(nz(extLiqL), zWin)
-liqLPU  = pctOf(nz(extLiqL), zWin)
-liqSZU  = zOf(nz(extLiqS), zWin)
-liqSPU  = pctOf(nz(extLiqS), zWin)
-liqBZU  = zOf(nz(liqBalU), zWin)
-liqBPU  = pctOf(nz(liqBalU), zWin)
-soprPU  = pctOf(nz(soprDevU), zWin)
+// One carried-forward series per measure, built ONCE and reused by both the
+// z-score and the percentile so the two always describe the same history. No
+// nz() anywhere: a synthetic zero is a value the market did not produce.
+oiChg4hFill  = holdLast(oiChg4hRaw)
+oiChg24hFill = holdLast(oiChg24hRaw)
+premiumFill  = holdLast(premiumRaw)
+partRawFill  = holdLast(partRawU)
+rvolSpotFill = holdLast(rvolSpotRaw)
+rvolPerpFill = holdLast(rvolPerpRaw)
+fundFill     = holdLast(fundCanon)
+etfFill      = holdLast(etf5dRaw)
+liqLFill     = holdLast(extLiqL)
+liqSFill     = holdLast(extLiqS)
+liqBFill     = holdLast(liqBalU)
+soprDevFill  = holdLast(soprDevU)
+
+oiZ4U   = zOf(oiChg4hFill, zWin)
+oiZ24U  = zOf(oiChg24hFill, zWin)
+oiP4U   = pctOf(oiChg4hFill, zWin)
+oiP24U  = pctOf(oiChg24hFill, zWin)
+premZU  = zOf(premiumFill, zWin)
+premPU  = pctOf(premiumFill, zWin)
+partZU  = zOf(partRawFill, zWin)
+partPU  = pctOf(partRawFill, zWin)
+rvSpZU  = zOf(rvolSpotFill, zWin)
+rvSpPU  = pctOf(rvolSpotFill, zWin)
+rvPpZU  = zOf(rvolPerpFill, zWin)
+rvPpPU  = pctOf(rvolPerpFill, zWin)
+fundZU  = zOf(fundFill, zWin)
+fundPU  = pctOf(fundFill, zWin)
+etfZU   = zOf(etfFill, zWin)
+etfPU   = pctOf(etfFill, zWin)
+liqLZU  = zOf(liqLFill, zWin)
+liqLPU  = pctOf(liqLFill, zWin)
+liqSZU  = zOf(liqSFill, zWin)
+liqSPU  = pctOf(liqSFill, zWin)
+liqBZU  = zOf(liqBFill, zWin)
+liqBPU  = pctOf(liqBFill, zWin)
+soprPU  = pctOf(soprDevFill, zWin)
 
 // OI 24H takes EMA(2) on its z before the ladder. It was the only candidate
 // that cleared every gate in the stability audit: label run 2 -> 3 bars, 100%
@@ -500,9 +589,9 @@ liqLZ  = liqLOK ? liqLZU : na
 liqLP  = liqLOK ? liqLPU : na
 liqSZ  = liqSOK ? liqSZU : na
 liqSP  = liqSOK ? liqSPU : na
-liqBZ  = liqOK ? liqBZU : na
-liqBP  = liqOK ? liqBPU : na
-fundRaw = fundOK ? extFunding : na
+liqBZ  = liqBalOK ? liqBZU : na
+liqBP  = liqBalOK ? liqBPU : na
+fundRaw = fundOK ? fundCanon : na
 soprP   = soprOK ? soprPU : na
 
 // ============================== 7. REGIME / IMPULSE / CONTEXT ================
@@ -603,23 +692,33 @@ trendPhrase(st) =>
 soprPhrase(st) =>
     st > 0 ? "ABOVE 1 — PROFIT REALIZATION" : st < 0 ? "BELOW 1 — LOSS REALIZATION" : "NEAR 1"
 
+// TWO VOCABULARIES, because two different things are being measured.
+//
+// statWord / statWordD describe a TIMESTAMP-VERIFIED feed. The symbol returns
+// its own bar time, so the lag is measured and FRESH means fresh.
 statWord(s)  => s == 4 ? "FRESH" : s == 3 ? "1 BAR OLD" : s == 2 ? "STALE" : s == 1 ? "MISCONFIGURED" : "UNAVAILABLE"
 statWordD(s) => s == 4 ? "FRESH" : s == 3 ? "1D OLD" : s == 2 ? "STALE" : s == 1 ? "MISCONFIGURED" : "UNAVAILABLE"
+// adaptWord describes an input.source() adapter, which has no upstream
+// timestamp at all. The only observable is whether the number moved, so these
+// words report UPDATE ACTIVITY and deliberately never say "fresh". A live feed
+// repeating a legitimate value reads LIKELY STALE too, and that is a false
+// positive the vocabulary is built to admit rather than hide.
+adaptWord(s) => s == 4 ? "ACTIVE" : s == 3 ? "UNCHANGED 1 BAR" : s == 2 ? "LIKELY STALE" : s == 1 ? "MISCONFIGURED" : "UNAVAILABLE"
 
 trendLbl = not dailyOK ? "DATA UNAVAILABLE" : trendPhrase(trSt)
 volLbl   = na(volPct) ? "DATA UNAVAILABLE" : volPct > 80 ? "HIGH" : volPct > 55 ? "ELEVATED" : volPct < 20 ? "COMPRESSED" : "NORMAL"
 oi24Lbl  = not oiOK ? "DATA UNAVAILABLE" : oiPhrase(oi24Lvl, oi24Dir)
 oi4Lbl   = not oiOK ? "DATA UNAVAILABLE" : oiPhrase(oi4Lvl, oi4Dir)
-fundLbl  = not fundOK ? statWord(fdStat) : fundPhrase(fdLvl, fdDir)
+fundLbl  = not fundOK ? adaptWord(fdStat) : fundPhrase(fdLvl, fdDir)
 premLbl  = na(premium) ? "DATA UNAVAILABLE" : premPhrase(pmLvl, pmDir)
 partLbl  = not partOK ? "DATA UNAVAILABLE" : partPhrase(ptLvl, ptDir)
 rsLbl    = na(rvolSpotZ) ? "DATA UNAVAILABLE" : rvolPhrase(rsLvl, rsDir)
 rpLbl    = na(rvolPerpZ) ? "DATA UNAVAILABLE" : rvolPhrase(rpLvl, rpDir)
-etfLbl   = not etfOK ? statWord(etStat) : etfPhrase(etLvl, etDir)
+etfLbl   = not etfOK ? adaptWord(etStat) : etfPhrase(etLvl, etDir)
 soprLbl  = not soprOK ? "DATA UNAVAILABLE" : soprPhrase(spSt)
-liqLLbl  = not liqLOK ? statWord(lLStat) : liqPhrase(lqLLvl, "LONG")
-liqSLbl  = not liqSOK ? statWord(lSStat) : liqPhrase(lqSLvl, "SHORT")
-liqBLbl  = not liqOK ? "DATA UNAVAILABLE" : lqBDir > 0 ? "MORE LONG LIQUIDATIONS" : lqBDir < 0 ? "MORE SHORT LIQUIDATIONS" : "BALANCED"
+liqLLbl  = not liqLOK ? adaptWord(lLStat) : liqPhrase(lqLLvl, "LONG")
+liqSLbl  = not liqSOK ? adaptWord(lSStat) : liqPhrase(lqSLvl, "SHORT")
+liqBLbl  = not liqOK ? "DATA UNAVAILABLE" : not liqPaired ? "DATA INCOMPARABLE" : lqBDir > 0 ? "MORE LONG LIQUIDATIONS" : lqBDir < 0 ? "MORE SHORT LIQUIDATIONS" : "BALANCED"
 
 // =========================================================== 10. anomalies ===
 // A measurement is anomalous when its intensity ladder is engaged. Ranked by
@@ -741,27 +840,34 @@ fire(txt) =>
     pushEvent(txt)
 
 // Feed status transitions. One call site each, unconditional, per-call-site var.
-statusEvent(name, st, confirmed) =>
+// `down` and `up` are passed in so a timestamp-verified feed can say STALE while
+// an adapter says only that it stopped updating. The alert must not claim to
+// know more than the measurement does.
+statusEvent(name, st, confirmed, down, up) =>
     var int prev = -1
     string msg = ""
     if confirmed
         if prev >= 0
             if st == 2 and prev != 2
-                msg := name + " data became STALE"
+                msg := name + " " + down
             else if st >= 3 and prev < 3
-                msg := name + " data available again"
+                msg := name + " " + up
         prev := st
     msg
 
 conf = barstate.isconfirmed
-seRef  = statusEvent("Reference", refStat, conf)
-seSpot = statusEvent("Spot", spotStat, conf)
-seOi   = statusEvent("Open interest", oiStat, conf)
-seFd   = statusEvent("Funding", fdStat, conf)
-seEt   = statusEvent("ETF", etStat, conf)
-seLl   = statusEvent("Long liquidations", lLStat, conf)
-seLs   = statusEvent("Short liquidations", lSStat, conf)
-seSp   = statusEvent("SOPR", soprStat, conf)
+TS_DOWN = "data became STALE"
+TS_UP   = "data available again"
+AD_DOWN = "stopped updating (LIKELY STALE)"
+AD_UP   = "started updating again"
+seRef  = statusEvent("Reference", refStat, conf, TS_DOWN, TS_UP)
+seSpot = statusEvent("Spot", spotStat, conf, TS_DOWN, TS_UP)
+seOi   = statusEvent("Open interest", oiStat, conf, TS_DOWN, TS_UP)
+seSp   = statusEvent("SOPR", soprStat, conf, TS_DOWN, TS_UP)
+seFd   = statusEvent("Funding adapter", fdStat, conf, AD_DOWN, AD_UP)
+seEt   = statusEvent("ETF adapter", etStat, conf, AD_DOWN, AD_UP)
+seLl   = statusEvent("Long liquidation adapter", lLStat, conf, AD_DOWN, AD_UP)
+seLs   = statusEvent("Short liquidation adapter", lSStat, conf, AD_DOWN, AD_UP)
 
 if conf
     // --- regime and context transitions ---
@@ -821,8 +927,8 @@ ageStr(t0) =>
 //   1 title + 1 header + 5 events + 1 header + 1 change block + 1 header
 //   + 9 anomalies + 1 header + 4 mechanics + 1 header + 2 trend/vol
 //   + 1 header + 7 derivatives + 1 header + 3 participation + 1 header
-//   + 2 flow + 1 header + 2 slow context + 1 header + 8 data health
-//   + 1 momentum + 2 footer = 57 rows.
+//   + 2 flow + 1 header + 2 slow context + 2 headers + 10 data health
+//   + 1 momentum + 2 footer = 60 rows.
 // Allocated 64, and every write is bounds-guarded, so a future section cannot
 // silently drop rows off the end. tests.mjs asserts the measured maximum.
 TBL_ROWS = 64
@@ -831,15 +937,15 @@ stateCol(s) =>
     color c = color.new(color.gray, 40)
     if str.contains(s, "UNAVAILABLE") or s == "INSUFFICIENT DATA" or str.contains(s, "MISCONFIGURED")
         c := color.new(color.gray, 20)
-    else if str.contains(s, "STALE")
+    else if str.contains(s, "STALE") or s == "DATA INCOMPARABLE"
         c := color.new(color.red, 25)
-    else if s == "NORMAL" or s == "FRESH" or s == "BALANCED" or s == "FLAT" or s == "NEAR 200D" or s == "NEAR 1" or s == "NORMAL RELATIVE ACTIVITY"
+    else if s == "NORMAL" or s == "FRESH" or s == "ACTIVE" or s == "BALANCED" or s == "FLAT" or s == "NEAR 200D" or s == "NEAR 1" or s == "NORMAL RELATIVE ACTIVITY"
         c := color.new(color.gray, 55)
     else if str.startswith(s, "EXTREME")
         c := color.new(color.orange, 15)
     else if str.startswith(s, "UNUSUAL") or str.startswith(s, "ELEVATED") or str.contains(s, "SPIKE") or str.contains(s, "SURGE")
         c := color.new(color.orange, 35)
-    else if s == "HIGH" or str.contains(s, "1 BAR OLD") or str.contains(s, "1D OLD")
+    else if s == "HIGH" or str.contains(s, "1 BAR OLD") or str.contains(s, "1D OLD") or str.startswith(s, "UNCHANGED")
         c := color.new(color.blue, 45)
     else
         c := color.new(color.gray, 45)
@@ -946,7 +1052,7 @@ if showTable and barstate.islast
     r += 1
     addRow(dash, r, "SHORT LIQ *", liqSOK ? val3(big(extLiqS), liqSP, liqSZ) : (useLiqS ? "check adapter" : "adapter off"), liqSLbl)
     r += 1
-    addRow(dash, r, "LIQ BALANCE", liqOK ? val3(sgn2(liqBal), liqBP, liqBZ) : "both sides needed", liqBLbl)
+    addRow(dash, r, "LIQ BALANCE", liqBalOK ? val3(sgn2(liqBal), liqBP, liqBZ) : not liqOK ? "both sides needed" : "declare shared unit", liqBLbl)
     r += 1
 
     // --- PARTICIPATION ---
@@ -975,8 +1081,8 @@ if showTable and barstate.islast
     addRow(dash, r, "SOPR", soprOK ? val3(f2(soprD), soprP, soprDev) : "no feed", soprLbl)
     r += 1
 
-    // --- DATA HEALTH ---
-    wideRow(dash, r, "DATA HEALTH", color.new(color.blue, 60), size.tiny)
+    // --- DATA HEALTH, split by what can actually be measured ---
+    wideRow(dash, r, "DATA HEALTH — timestamp-verified (lag is measured)", color.new(color.blue, 60), size.tiny)
     r += 1
     addRow(dash, r, "Reference", refSym, statWord(refStat))
     r += 1
@@ -988,11 +1094,17 @@ if showTable and barstate.islast
     r += 1
     addRow(dash, r, "SOPR", soprSym, statWordD(soprStat))
     r += 1
-    addRow(dash, r, "Funding", useFunding ? "adapter" : "off", statWord(fdStat))
+    wideRow(dash, r, "DATA HEALTH — external adapters (update activity only, no upstream timestamp)", color.new(color.blue, 60), size.tiny)
     r += 1
-    addRow(dash, r, "ETF flow", useEtf ? "adapter" : "off", statWord(etStat))
+    addRow(dash, r, "Funding", useFunding ? (fundUnit) : "off", adaptWord(fdStat))
     r += 1
-    addRow(dash, r, "Liquidations", (useLiqL ? "long " : "") + (useLiqS ? "short" : "") + (not useLiqL and not useLiqS ? "off" : ""), statWord(math.min(lLStat, lSStat)))
+    addRow(dash, r, "ETF flow", useEtf ? (etfDailyMode ? "daily value" : "per-bar increment") : "off", adaptWord(etStat))
+    r += 1
+    addRow(dash, r, "Long liquidations", useLiqL ? "adapter" : "off", adaptWord(lLStat))
+    r += 1
+    addRow(dash, r, "Short liquidations", useLiqS ? "adapter" : "off", adaptWord(lSStat))
+    r += 1
+    addRow(dash, r, "Liq pairing", liqPaired ? "declared same unit" : "not declared", liqPaired ? "BALANCE ENABLED" : "BALANCE WITHHELD")
     r += 1
 
     wideRow(dash, r, "EVIDENCE: DESCRIPTIVE   ACTION: CONTEXT ONLY", color.new(color.gray, 45), size.tiny)
@@ -1013,8 +1125,12 @@ if barstate.islast
         msg := "⚠ Open interest unavailable or stale — OI readings disabled."
     else if fdStat == 1 or etStat == 1 or lLStat == 1 or lSStat == 1
         msg := "⚠ An external adapter is enabled but its Source is still the chart's close. Set the Source to the other indicator's plot, or turn the adapter off. It reads MISCONFIGURED, not STALE, in DATA HEALTH."
-    else if fdStat == 2 or etStat == 2 or lLStat == 2 or lSStat == 2 or soprStat == 2
-        msg := "⚠ A data feed has stopped updating. Its readings are suppressed — see DATA HEALTH."
+    else if soprStat == 2
+        msg := "⚠ A timestamp-verified feed is stale — its readings are suppressed. See DATA HEALTH."
+    else if fdStat == 2 or etStat == 2 or lLStat == 2 or lSStat == 2
+        msg := "⚠ An external adapter has not changed value for a long time. Its readings are suppressed as a precaution. This is an update-activity heuristic, not proof the feed is dead — a plot that legitimately repeats a value looks identical. See DATA HEALTH."
+    else if liqLOK and liqSOK and not liqPaired
+        msg := "⚠ Both liquidation adapters are live but you have not declared that they share a unit and source. LIQ BALANCE is withheld: (long − short) / (long + short) is only meaningful between comparable quantities, and two mismatched scales still land inside [−1, +1]."
     label.delete(warn)
     if msg != ""
         warn := label.new(bar_index, high, msg, yloc = yloc.price, color = color.orange, textcolor = color.white, style = label.style_label_left, size = size.small)
@@ -1032,7 +1148,8 @@ if anomCount > 0
 
 plot(tfOK ? 1 : 0,   "t_tfOK",      display = display.none)
 plot(rC,             "t_refClose",  display = display.none)
-plot(rV,             "t_refVol",    display = display.none)
+plot(oiObs ? 1 : 0,  "t_oiObs",     display = display.none)
+plot(oiChg4hFill,    "t_oiFill4",   display = display.none)
 plot(atr14,          "t_atr14",     display = display.none)
 plot(volPct,         "t_volPct",    display = display.none)
 plot(trendDist,      "t_trendDist", display = display.none)
