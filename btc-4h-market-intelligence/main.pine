@@ -1,0 +1,586 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © tc3oliver
+
+//@version=6
+indicator("BTC 4H Market Radar", overlay = true, max_bars_back = 2500)
+
+// ============================================================================
+// WHAT THIS IS
+//
+// A monitor, not a forecaster. It watches open interest, funding, perpetual
+// premium, spot-vs-perp participation, ETF flow and SOPR, normalises each
+// against its own recent history, and tells you three things:
+//
+//   1. which measurements are currently ANOMALOUS
+//   2. what CHANGED since the last confirmed bar
+//   3. which measurements are ALIGNED with each other, and which conflict
+//
+// It does not tell you what will happen next, because it cannot.
+//
+// WHY THERE IS NO ACTION LAYER
+// v1 shipped one. It was audited against matched price-environment controls on
+// 13,164 bars of 4H BTC and all three candidate Actions failed:
+//   - DO NOT CHASE on a leveraged rally: 13 episodes in six years, development
+//     and validation opposite in sign on every outcome.
+//   - REDUCE EXPOSURE on risk-off: matched controls showed LESS forward
+//     drawdown, not more (+0.53 ATR at 3D, +0.87 at 7D). The state fired after
+//     the fall, not before.
+//   - Spot-led rallies are higher quality: a real, direction-consistent effect
+//     that pointed the OPPOSITE way and shrank fourfold once the extreme 5% of
+//     episodes were trimmed.
+// Earlier work also falsified open-interest direction, top-trader positioning,
+// market structure as a gate, and derivatives as a risk flag. See
+// audit/AUDIT.md and ../btc-4h-regime-engine/RESEARCH-LOG.md.
+//
+// So every label here is a DESCRIPTION of a measurement, never a prediction.
+// State names carry no directional implication: "EXTREME EXPANSION" says open
+// interest grew unusually fast, and nothing whatsoever about what follows.
+//
+// HYSTERESIS is used for readability only. It stops a state flickering across a
+// threshold; it is not claimed to improve any decision. v1 split 1,863 bars of
+// one state into 445 episodes, a median of two bars — unreadable, whatever it
+// might have meant.
+//
+// UNITS GUARD. USD-notional open interest is base-unit OI times price, so it
+// falls whenever price falls. In testing it labelled 91% of pullbacks "healthy
+// deleveraging". A feed that looks like notional is rejected outright.
+// ============================================================================
+
+if not timeframe.isintraday and barstate.islast
+    runtime.error("Intraday timeframe required. Designed for 4H; 1H-12H are sensible.")
+
+barsPerDay = math.max(1, math.round(86400.0 / timeframe.in_seconds(timeframe.period)))
+
+// ---------------------------------------------------------------- inputs ---
+G_SYM = "Symbols"
+spotSym = input.symbol("BINANCE:BTCUSDT",      "Spot",          group = G_SYM)
+perpSym = input.symbol("BINANCE:BTCUSDT.P",    "Perpetual",     group = G_SYM)
+oiSym   = input.symbol("BINANCE:BTCUSDT.P_OI", "Open interest", group = G_SYM, tooltip = "Must be BASE-UNIT (BTC) open interest. A USD-notional feed is rejected at runtime: it moves with price and cannot measure positioning.")
+
+G_EXT = "External data — point at another indicator's plot"
+useFunding = input.bool(false, "Enable funding adapter",       group = G_EXT)
+extFunding = input.source(close, "  Aggregated funding rate",  group = G_EXT, tooltip = "Reads DATA UNAVAILABLE until enabled AND wired to a plot other than close.")
+useEtf     = input.bool(false, "Enable ETF flow adapter",      group = G_EXT)
+extEtf     = input.source(close, "  US spot BTC ETF net flow", group = G_EXT)
+useLiq     = input.bool(false, "Enable liquidation adapter",   group = G_EXT)
+extLiq     = input.source(close, "  Aggregated liquidations",  group = G_EXT)
+
+G_CFG = "Normalisation windows"
+zWin      = input.int(180,  "Z-score lookback (bars)",        minval = 30, maxval = 1000, group = G_CFG, tooltip = "180 bars = 30 days at 4H.")
+volPctWin = input.int(2190, "Volatility percentile lookback", minval = 200, maxval = 2400, group = G_CFG)
+rvolDays  = input.int(28,   "RVOL comparison window (days)",  minval = 7, maxval = 60, group = G_CFG, tooltip = "Volume is compared with the SAME time-of-day slot on previous days. A flat average would call every Asian-hours bar quiet forever.")
+cvdTF     = input.timeframe("5", "Flow proxy lower timeframe", group = G_CFG)
+
+// Schmitt-trigger thresholds. Entering requires more evidence than staying.
+// This is a display-stability device and is not claimed to add information.
+G_HYS = "Hysteresis (display stability only)"
+oiEnter   = input.float(1.0, "OI enter (σ)",         minval = 0.2, step = 0.05, group = G_HYS)
+oiExit    = input.float(0.6, "OI exit (σ)",          minval = 0.1, step = 0.05, group = G_HYS)
+oiXEnter  = input.float(2.0, "OI extreme enter (σ)", minval = 0.5, step = 0.05, group = G_HYS)
+oiXExit   = input.float(1.25, "OI extreme exit (σ)", minval = 0.2, step = 0.05, group = G_HYS)
+fundEnter = input.float(1.5, "Funding enter (σ)",    minval = 0.2, step = 0.05, group = G_HYS)
+fundExit  = input.float(1.0, "Funding exit (σ)",     minval = 0.1, step = 0.05, group = G_HYS)
+premEnter = input.float(2.0, "Premium enter (σ)",    minval = 0.2, step = 0.05, group = G_HYS)
+premExit  = input.float(1.25, "Premium exit (σ)",    minval = 0.1, step = 0.05, group = G_HYS)
+partEnter = input.float(1.0, "Participation enter (σ)", minval = 0.2, step = 0.05, group = G_HYS)
+partExit  = input.float(0.6, "Participation exit (σ)",  minval = 0.1, step = 0.05, group = G_HYS)
+rvolEnter = input.float(1.5, "RVOL enter (σ)",       minval = 0.2, step = 0.05, group = G_HYS)
+rvolExit  = input.float(1.0, "RVOL exit (σ)",        minval = 0.1, step = 0.05, group = G_HYS)
+etfEnter  = input.float(1.0, "ETF enter (σ)",        minval = 0.2, step = 0.05, group = G_HYS)
+etfExit   = input.float(0.6, "ETF exit (σ)",         minval = 0.1, step = 0.05, group = G_HYS)
+trEnter   = input.float(0.5, "Trend enter (ATR from 200D)", minval = 0.1, step = 0.05, group = G_HYS)
+trExit    = input.float(0.2, "Trend exit (ATR from 200D)",  minval = 0.05, step = 0.05, group = G_HYS)
+soprEnter = input.float(0.02, "SOPR enter (dev from 1)", minval = 0.001, step = 0.001, group = G_HYS)
+soprExit  = input.float(0.01, "SOPR exit (dev from 1)",  minval = 0.001, step = 0.001, group = G_HYS)
+
+G_UI = "Display"
+showTable = input.bool(true, "Dashboard", group = G_UI)
+maxAnom   = input.int(5, "Max anomalies listed", minval = 1, maxval = 9, group = G_UI)
+tblPos    = input.string("Top right", "Position", options = ["Top right", "Middle right", "Bottom right", "Top left", "Bottom left"], group = G_UI)
+
+// ------------------------------------------------------------------ data ---
+[spotC, spotV] = request.security(spotSym, timeframe.period, [close, volume], ignore_invalid_symbol = true)
+[perpC, perpV] = request.security(perpSym, timeframe.period, [close, volume], ignore_invalid_symbol = true)
+
+// TradingView declines to specify the denomination of a non-aggregated OI
+// symbol — "may be presented in base currency, quote currency, or contracts,
+// depending on the exchange". So ask the feed. syminfo.* evaluates in the
+// REQUESTED context; "NONE" means the values are not currency amounts, which is
+// what a base-unit or contract feed looks like.
+[oiRaw, oiCur] = request.security(oiSym, timeframe.period, [close, syminfo.currency], ignore_invalid_symbol = true)
+
+// Documented non-repainting idiom: request the PREVIOUS completed daily value
+// with lookahead on. Fixed for the whole following day, can never change after
+// the fact. The [1] offset and lookahead_on are interdependent.
+[dSma200, dMom12w] = request.security(perpSym, "1D", [ta.sma(close, 200)[1], close[1] / close[85] - 1], lookahead = barmerge.lookahead_on, ignore_invalid_symbol = true)
+[soprD, soprEmaD]  = request.security("GLASSNODE:BTC_SOPR", "1D", [close[1], ta.ema(close, 7)[1]], lookahead = barmerge.lookahead_on, ignore_invalid_symbol = true)
+
+// ESTIMATED flow. Lower-timeframe bars are classified by their own direction —
+// not aggressor data. ignore_invalid_timeframe must be true: it defaults to
+// false, and a user-editable timeframe set above the chart's would raise a
+// runtime error and halt the script.
+[perpUp, perpDn] = request.security_lower_tf(perpSym, cvdTF, [close > open ? volume : 0.0, close < open ? volume : 0.0], ignore_invalid_timeframe = true)
+[spotUp, spotDn] = request.security_lower_tf(spotSym, cvdTF, [close > open ? volume : 0.0, close < open ? volume : 0.0], ignore_invalid_timeframe = true)
+
+// Two distinct failures returning different things: no intrabar data for a bar
+// gives an EMPTY ARRAY, an invalid timeframe gives na. array.size() on an na
+// array throws, so both go through this.
+arrLen(a) =>
+    na(a) ? 0 : array.size(a)
+
+arrSum(a) =>
+    float s = 0.0
+    if arrLen(a) > 0
+        for i = 0 to array.size(a) - 1
+            v = array.get(a, i)
+            s += na(v) ? 0.0 : v
+    s
+
+flowOK    = arrLen(perpUp) > 0 and arrLen(spotUp) > 0
+perpDelta = flowOK ? arrSum(perpUp) - arrSum(perpDn) : na
+
+// ------------------------------------------------------- availability ------
+spotOK  = not na(spotC) and not na(spotV) and spotV > 0
+perpOK  = not na(perpC) and not na(perpV) and perpV > 0
+dailyOK = not na(dSma200)
+soprOK  = not na(soprD)
+
+oiCurSaysNotional = not na(oiCur) and (oiCur == "USD" or oiCur == "USDT" or oiCur == "USDC")
+// The zero test is not padding: the Binance OI history has 12 bars at exactly
+// zero across 2022-2025, and oi/oi[1]-1 would read -100% and poison the window.
+oiLooksNotional = oiCurSaysNotional or (not na(oiRaw) and oiRaw > 5e6)
+oiOK = not na(oiRaw) and oiRaw > 0 and not oiLooksNotional
+oi   = oiOK ? oiRaw : na
+
+// An unwired input.source() returns exactly its default — no na, no sentinel —
+// so "user picked close" is indistinguishable from "user picked nothing". The
+// toggle is the contract; the comparison catches enabling without wiring.
+isWired(src) =>
+    ta.highest(math.abs(src - close), 50) > 0
+
+fundOK = useFunding and isWired(extFunding)
+etfOK  = useEtf and isWired(extEtf)
+liqOK  = useLiq and isWired(extLiq)
+adapterMisconfigured = (useFunding and not fundOK) or (useEtf and not etfOK) or (useLiq and not liqOK)
+
+// -------------------------------------------------------------- helpers ----
+zOf(src, len) =>
+    s = ta.stdev(src, len)
+    s > 0 ? (src - ta.sma(src, len)) / s : 0.0
+
+slotRvol(src, days) =>
+    float acc = 0.0
+    int cnt = 0
+    for k = 1 to days
+        v = src[k * barsPerDay]
+        if not na(v) and v > 0
+            acc += v
+            cnt += 1
+    cnt >= 5 and acc > 0 ? src / (acc / cnt) : na
+
+f2(x)   => na(x) ? "n/a" : str.tostring(x, "#.##")
+sgn2(x) => na(x) ? "n/a" : (x >= 0 ? "+" : "") + str.tostring(x, "#.##")
+pctS(x) => na(x) ? "n/a" : str.tostring(x * 100, "#.##") + "%"
+
+// Schmitt trigger, three levels. Entering costs more than staying, so a value
+// hovering at the boundary does not toggle every bar. A function-local `var`
+// gives every call site independent state, so one definition serves all
+// measures — but it must be called unconditionally or the state desynchronises.
+// Returns -1 / 0 / +1, and the value it held at the last confirmed bar.
+sch1(z, enterZ, exitZ) =>
+    var int st = 0
+    var int lastConf = 0
+    prev = lastConf
+    if not na(z)
+        if st == 0
+            st := z >= enterZ ? 1 : z <= -enterZ ? -1 : 0
+        else if st == 1 and z < exitZ
+            st := 0
+        else if st == -1 and z > -exitZ
+            st := 0
+    if barstate.isconfirmed
+        lastConf := st
+    [st, prev]
+
+// Five levels: -2 -1 0 +1 +2. A sign flip while engaged passes through 0 rather
+// than jumping the zero line, so "returned to normal" is always reported.
+sch2(z, e1, x1, e2, x2) =>
+    var int lvl = 0
+    var int sgn = 0
+    var int lastConf = 0
+    prev = lastConf
+    if not na(z)
+        a = math.abs(z)
+        s = z >= 0 ? 1 : -1
+        if lvl == 0
+            if a >= e1
+                lvl := a >= e2 ? 2 : 1
+                sgn := s
+        else if s != sgn
+            lvl := 0
+            sgn := 0
+        else if a < x1
+            lvl := 0
+            sgn := 0
+        else if lvl == 2 and a < x2
+            lvl := 1
+        else if lvl == 1 and a >= e2
+            lvl := 2
+    st = lvl * sgn
+    if barstate.isconfirmed
+        lastConf := st
+    [st, prev]
+
+// ------------------------------------------------------------- features ----
+ema50  = ta.ema(close, 50)
+ema200 = ta.ema(close, 200)
+atr14  = ta.atr(14)
+
+atrPct    = close > 0 ? atr14 / close : na
+logRet    = math.log(close / close[1])
+rvol30    = ta.stdev(logRet, 30) * math.sqrt(365.0 * barsPerDay)
+volPctLen = volPctWin > 2400 ? 2400 : volPctWin
+volPct    = ta.percentrank(rvol30, volPctLen)
+
+// Trend measured as distance from the confirmed daily 200MA in ATR units, so
+// the hysteresis threshold means the same thing in 2020 and 2026.
+trendDist = dailyOK and atr14 > 0 ? (close - dSma200) / atr14 : na
+
+oiChg4h  = oiOK and not na(oi[1]) and oi[1] > 0 ? oi / oi[1] - 1 : na
+oiChg24h = oiOK and not na(oi[barsPerDay]) and oi[barsPerDay] > 0 ? oi / oi[barsPerDay] - 1 : na
+oiZ4     = oiOK ? zOf(nz(oiChg4h), zWin) : na
+oiZ24    = oiOK ? zOf(nz(oiChg24h), zWin) : na
+
+premium = spotOK and perpOK and spotC > 0 ? perpC / spotC - 1 : na
+// The raw perp/spot premium carries a persistent negative level offset (median
+// -0.039% over six years). Only the z-score is meaningful; an absolute
+// threshold would be measuring that offset.
+premZ = na(premium) ? na : zOf(premium, zWin)
+
+rvolSpot = spotOK ? slotRvol(spotV, rvolDays) : na
+rvolPerp = perpOK ? slotRvol(perpV, rvolDays) : na
+partOK   = not na(rvolSpot) and not na(rvolPerp) and rvolPerp > 0 and rvolSpot > 0
+// Log ratio so spot-dominant and perp-dominant are symmetric around zero.
+partRaw  = partOK ? math.log(rvolSpot / rvolPerp) : na
+partZ    = partOK ? zOf(partRaw, zWin) : na
+rvolSpotZ = spotOK and not na(rvolSpot) ? zOf(rvolSpot, zWin) : na
+rvolPerpZ = perpOK and not na(rvolPerp) ? zOf(rvolPerp, zWin) : na
+
+fundZ = fundOK ? zOf(extFunding, zWin) : na
+etf5d = etfOK  ? math.sum(extEtf, barsPerDay * 5) : na
+etfZ  = etfOK  ? zOf(nz(etf5d), zWin) : na
+liqZ  = liqOK  ? zOf(extLiq, zWin) : na
+soprDev = soprOK ? soprD - 1.0 : na
+
+// ============================================ REGIME / IMPULSE / CONTEXT =====
+// Not every measurement deserves the same product shape. A stability audit
+// (audit/smoothing-audit.mjs, gates taken from the brief: label run >= 3 bars,
+// median detection delay <= 1 with P90 <= 2, >= 90% retention of events at and
+// above the measure's own entry threshold) sorted them:
+//
+//   REGIME   readable enough to hold a persistent state
+//   IMPULSE  no smoothing made it readable without destroying the extremes it
+//            exists to report — so it is reported as an instantaneous spike
+//            instead. Zero latency, no state to flicker, nothing claimed to
+//            persist, and it never appears as a regime transition.
+//   CONTEXT  slow external feeds
+//
+// Every sch* call must run unconditionally on every bar: a skipped call leaves
+// that call site's `var` state permanently out of step.
+
+// --- REGIME ---
+// OI 24H takes EMA(2). It was the only candidate that cleared every gate:
+// label run 2 -> 3 bars, 100% retention at 1.5σ / 2.0σ / 2.5σ, median delay 0.
+// EMA(3) and EMA(4) pushed P90 delay to 3-4 bars for no further gain.
+oiZ24s = oiOK ? ta.ema(nz(oiZ24), 2) : na
+[trSt,   trPrev]   = sch1(trendDist, trEnter, trExit)
+[oi24St, oi24Prev] = sch2(oiZ24s, oiEnter, oiExit, oiXEnter, oiXExit)
+
+// --- CONTEXT --- slow external feeds; daily by nature, so not flicker-prone.
+// Unverifiable offline, since none of the three has a Pine-requestable symbol.
+[fdSt, fdPrev] = sch1(fundZ, fundEnter, fundExit)
+[etSt, etPrev] = sch1(etfZ, etfEnter, etfExit)
+[spSt, spPrev] = sch1(soprDev, soprEnter, soprExit)
+
+// --- IMPULSE --- fired from the RAW z, deliberately: the whole point of an
+// impulse is that it is reported the moment it happens. The smoothed value is
+// displayed beside it for reference and drives nothing.
+//   OI 4H     EMA(3) cut 1.5σ retention to 51% and the peak to 0.51
+//   PREMIUM   EMA(2) lost 46% of its 2σ events
+//   PARTICIP  every candidate left a P90 delay of 4-5 bars
+// Spot/perp RVOL are classified by analogy rather than separately audited:
+// they are the components of the participation ratio that failed.
+oiZ4s  = oiOK ? ta.ema(nz(oiZ4), 2) : na
+premZs = na(premZ) ? na : ta.ema(premZ, 2)
+partZs = partOK ? ta.ema(nz(partZ), 2) : na
+
+imp(z, thr) =>
+    na(z) ? 0 : z >= thr ? 1 : z <= -thr ? -1 : 0
+
+oi4Imp = oiOK ? imp(oiZ4, oiEnter) : 0
+pmImp  = imp(premZ, premEnter)
+ptImp  = partOK ? imp(partZ, partEnter) : 0
+rsImp  = imp(rvolSpotZ, rvolEnter)
+rpImp  = imp(rvolPerpZ, rvolEnter)
+
+// --------------------------------------------------------- state labels ----
+// Descriptions of a measurement. None carries a directional implication.
+trendLbl = not dailyOK ? "DATA UNAVAILABLE" : trSt > 0 ? "BULLISH" : trSt < 0 ? "BEARISH" : "NEUTRAL"
+oiLbl(st) =>
+    st == 2 ? "EXTREME EXPANSION" : st == 1 ? "EXPANDING" : st == -1 ? "REDUCING" : st == -2 ? "EXTREME REDUCTION" : "NORMAL"
+oiState  = not oiOK ? "DATA UNAVAILABLE" : oiLbl(oi24St)
+fundLbl  = not fundOK ? "DATA UNAVAILABLE" : fdSt > 0 ? "CROWDED LONG" : fdSt < 0 ? "CROWDED SHORT" : "NORMAL"
+// Impulse labels describe THIS BAR, not a regime. Same vocabulary, but the
+// dashboard tags the row so the difference is visible.
+premLbl  = na(premZ) ? "DATA UNAVAILABLE" : pmImp > 0 ? "POSITIVE EXTREME" : pmImp < 0 ? "NEGATIVE EXTREME" : "NORMAL"
+partLbl  = not partOK ? "DATA UNAVAILABLE" : ptImp > 0 ? "SPOT DOMINANT" : ptImp < 0 ? "PERP DOMINANT" : "BALANCED"
+oi4Lbl   = not oiOK ? "DATA UNAVAILABLE" : oiLbl(oi4Imp)
+etfLbl   = not etfOK ? "DATA UNAVAILABLE" : etSt > 0 ? "INFLOW" : etSt < 0 ? "OUTFLOW" : "NEUTRAL"
+soprLbl  = not soprOK ? "DATA UNAVAILABLE" : spSt > 0 ? "PROFIT REALIZATION" : spSt < 0 ? "LOSS REALIZATION" : "NEUTRAL"
+volLbl   = na(volPct) ? "DATA UNAVAILABLE" : volPct > 80 ? "HIGH" : volPct > 55 ? "ELEVATED" : volPct < 20 ? "COMPRESSED" : "NORMAL"
+
+// ============================================================ anomalies =====
+// A measurement is anomalous when its hysteresis state is engaged. Ranked by
+// absolute z so the largest deviation is read first.
+var array<string> aName = array.new_string(0)
+var array<float>  aZ    = array.new_float(0)
+array.clear(aName)
+array.clear(aZ)
+
+addAnom(name, st, z, posLbl, negLbl) =>
+    if st != 0 and not na(z)
+        array.push(aName, name + " " + (st > 0 ? posLbl : negLbl))
+        array.push(aZ, z)
+
+// Regimes and impulses both belong here — the radar answers "what is unusual
+// right now", and an instantaneous spike is unusual right now. The distinction
+// lives in WHAT CHANGED, which reports regime transitions only.
+// A trailing * marks an IMPULSE: this bar, not a regime.
+addAnom("OI 24H",      oi24St, oiZ24,     math.abs(oi24St) == 2 ? "EXTREME EXPANSION" : "EXPANDING", math.abs(oi24St) == 2 ? "EXTREME REDUCTION" : "REDUCING")
+addAnom("OI 4H *",     oi4Imp, oiZ4,      "EXPANDING", "REDUCING")
+addAnom("FUNDING",     fdSt,   fundZ,     "CROWDED LONG", "CROWDED SHORT")
+addAnom("PREMIUM *",   pmImp,  premZ,     "POSITIVE EXTREME", "NEGATIVE EXTREME")
+addAnom("PARTICIP *",  ptImp,  partZ,     "SPOT DOMINANT", "PERP DOMINANT")
+addAnom("SPOT RVOL *", rsImp,  rvolSpotZ, "HIGH", "LOW")
+addAnom("PERP RVOL *", rpImp,  rvolPerpZ, "HIGH", "LOW")
+addAnom("ETF 5D",      etSt,   etfZ,      "INFLOW", "OUTFLOW")
+addAnom("SOPR",        spSt,   soprDev,   "PROFIT REALIZATION", "LOSS REALIZATION")
+
+anomCount = array.size(aName)
+
+// ========================================================= what changed =====
+// Compared with the last CONFIRMED bar, so a forming bar shows a provisional
+// diff rather than silently overwriting history.
+chLine(name, st, prev, lblFn) =>
+    st == prev ? "" :
+     prev == 0 ? "NEW: " + name + " -> " + lblFn + "\n" :
+     st == 0 ? "NORMALIZED: " + name + " returned to normal\n" :
+     "CHANGED: " + name + " -> " + lblFn + "\n"
+
+// REGIME and CONTEXT only. An impulse has no previous state to have changed
+// from, so listing one here would report noise as a transition — which is the
+// failure the stability audit exists to prevent. Impulses surface in ANOMALIES.
+changes = chLine("Trend", trSt, trPrev, trendLbl) + chLine("OI 24H", oi24St, oi24Prev, oiLbl(oi24St)) + chLine("Funding", fdSt, fdPrev, fundLbl) + chLine("ETF", etSt, etPrev, etfLbl) + chLine("SOPR", spSt, spPrev, soprLbl)
+changed = str.length(changes) > 0
+
+// ============================================ cross-data consistency ========
+// Do several measurements describe the same thing? This counts agreement in
+// DIRECTION OF CHANGE over 24h. It says nothing about what follows — an aligned
+// reading is not a stronger signal, it is a less ambiguous description.
+dirOf(x, ref) => na(x) or na(ref) ? 0 : x > ref ? 1 : x < ref ? -1 : 0
+d24 = barsPerDay
+pxDir   = dirOf(close, close[d24])
+oiDir   = oiOK ? dirOf(oi, oi[d24]) : 0
+fdDir   = fundOK ? dirOf(extFunding, extFunding[d24]) : 0
+pmDir   = na(premium) ? 0 : dirOf(premium, premium[d24])
+rpDir   = na(rvolPerp) ? 0 : dirOf(rvolPerp, rvolPerp[d24])
+
+alignAvail = (pxDir != 0 ? 1 : 0) + (oiDir != 0 ? 1 : 0) + (fdDir != 0 ? 1 : 0) + (pmDir != 0 ? 1 : 0) + (rpDir != 0 ? 1 : 0)
+up   = (pxDir > 0 ? 1 : 0) + (oiDir > 0 ? 1 : 0) + (fdDir > 0 ? 1 : 0) + (pmDir > 0 ? 1 : 0) + (rpDir > 0 ? 1 : 0)
+down = (pxDir < 0 ? 1 : 0) + (oiDir < 0 ? 1 : 0) + (fdDir < 0 ? 1 : 0) + (pmDir < 0 ? 1 : 0) + (rpDir < 0 ? 1 : 0)
+aligned = math.max(up, down)
+alignLbl = alignAvail < 3 ? "INSUFFICIENT DATA" : aligned >= alignAvail ? "STRONGLY ALIGNED" : aligned >= alignAvail - 1 ? "MOSTLY ALIGNED" : "MIXED"
+alignDir = alignAvail < 3 ? "" : up > down ? " (all expanding)" : down > up ? " (all contracting)" : ""
+
+// ============================================================== display =====
+stateCol(s) =>
+    color c = color.new(color.gray, 40)
+    if s == "DATA UNAVAILABLE" or s == "INSUFFICIENT DATA"
+        c := color.new(color.gray, 20)
+    else if s == "NORMAL" or s == "NEUTRAL" or s == "BALANCED"
+        c := color.new(color.gray, 55)
+    else if s == "EXTREME EXPANSION" or s == "EXTREME REDUCTION" or s == "POSITIVE EXTREME" or s == "NEGATIVE EXTREME" or s == "CROWDED LONG" or s == "CROWDED SHORT" or s == "HIGH"
+        c := color.new(color.orange, 20)
+    else if s == "BULLISH" or s == "INFLOW" or s == "SPOT DOMINANT" or s == "STRONGLY ALIGNED"
+        c := color.new(color.teal, 25)
+    else if s == "BEARISH" or s == "OUTFLOW" or s == "PERP DOMINANT" or s == "MIXED"
+        c := color.new(color.red, 30)
+    c
+
+addRow(t, i, lbl, val, st) =>
+    table.cell(t, 0, i, lbl, text_color = color.new(color.white, 25), text_size = size.tiny, text_halign = text.align_left)
+    table.cell(t, 1, i, val, text_color = color.new(color.white, 10), text_size = size.tiny, text_halign = text.align_right)
+    table.cell(t, 2, i, st,  text_color = color.white, bgcolor = stateCol(st), text_size = size.tiny, text_halign = text.align_left)
+
+// Raw z is always shown, whatever the product shape. A smoothed value that hid
+// the latest move would defeat the point of a monitor.
+zPair(rawZ, smZ) =>
+    na(rawZ) ? "n/a" : "raw " + sgn2(rawZ) + "  sm " + (na(smZ) ? "—" : sgn2(smZ))
+
+wideRow(t, i, txt, bg, sz) =>
+    table.cell(t, 0, i, txt, text_color = color.white, bgcolor = bg, text_size = sz, text_halign = text.align_left)
+    table.merge_cells(t, 0, i, 2, i)
+
+var table dash = na
+if showTable and barstate.islast
+    pos = tblPos == "Top right" ? position.top_right : tblPos == "Middle right" ? position.middle_right : tblPos == "Bottom right" ? position.bottom_right : tblPos == "Top left" ? position.top_left : position.bottom_left
+    // Rebuilt rather than mutated: barstate.islast is true on every forming bar
+    // and merged cells cannot be un-merged.
+    table.delete(dash)
+    dash := table.new(pos, 3, 26, border_width = 1, border_color = color.new(color.gray, 70), frame_width = 1, frame_color = color.new(color.gray, 50))
+
+    int r = 0
+    wideRow(dash, r, "BTC 4H MARKET RADAR", color.new(color.blue, 20), size.small)
+    r += 1
+
+    // --- 1. what changed, then current anomalies ---
+    wideRow(dash, r, changed ? "WHAT CHANGED" : "WHAT CHANGED — nothing since last bar", color.new(color.blue, 45), size.tiny)
+    r += 1
+    if changed
+        wideRow(dash, r, changes, color.new(color.black, 55), size.tiny)
+        r += 1
+
+    wideRow(dash, r, "ANOMALIES: " + str.tostring(anomCount), anomCount > 0 ? color.new(color.orange, 30) : color.new(color.gray, 50), size.tiny)
+    r += 1
+    if anomCount > 0
+        idx = array.sort_indices(aZ, order.descending)
+        // sort_indices ranks signed values, so walk from both ends to surface
+        // the largest absolute deviations regardless of direction.
+        shown = math.min(anomCount, maxAnom)
+        lo = 0
+        hi = anomCount - 1
+        for k = 0 to shown - 1
+            zLo = math.abs(array.get(aZ, array.get(idx, lo)))
+            zHi = math.abs(array.get(aZ, array.get(idx, hi)))
+            pick = zLo >= zHi ? array.get(idx, lo) : array.get(idx, hi)
+            if zLo >= zHi
+                lo += 1
+            else
+                hi -= 1
+            table.cell(dash, 0, r, array.get(aName, pick), text_color = color.new(color.white, 10), text_size = size.tiny, text_halign = text.align_left)
+            table.merge_cells(dash, 0, r, 1, r)
+            table.cell(dash, 2, r, sgn2(array.get(aZ, pick)) + "σ", text_color = color.white, bgcolor = color.new(color.orange, 35), text_size = size.tiny, text_halign = text.align_right)
+            r += 1
+
+    // --- 2. trend and volatility ---
+    wideRow(dash, r, "REGIME — persistent state", color.new(color.blue, 60), size.tiny)
+    r += 1
+    addRow(dash, r, "TREND", dailyOK ? sgn2(trendDist) + " ATR from 200D" : "no daily", trendLbl)
+    r += 1
+    addRow(dash, r, "VOLATILITY", "ATR " + pctS(atrPct) + "  pct " + f2(volPct), volLbl)
+    r += 1
+    addRow(dash, r, "OI 24H", oiLooksNotional ? "REJECTED [" + (na(oiCur) ? "?" : oiCur) + "]" : oiOK ? pctS(oiChg24h) + "  " + zPair(oiZ24, oiZ24s) : "no OI", oiState)
+    r += 1
+
+    // Impulses report this bar only. They are fired from the RAW z — see the
+    // stability audit: no smoothing kept their extremes intact.
+    wideRow(dash, r, "IMPULSE — this bar only, not a regime", color.new(color.orange, 60), size.tiny)
+    r += 1
+    addRow(dash, r, "OI 4H", oiOK ? pctS(oiChg4h) + "  " + zPair(oiZ4, oiZ4s) : "no OI", oi4Lbl)
+    r += 1
+    addRow(dash, r, "PREMIUM", na(premium) ? "no spot/perp" : pctS(premium) + "  " + zPair(premZ, premZs), premLbl)
+    r += 1
+    addRow(dash, r, "PARTICIPATION", partOK ? "spot " + f2(rvolSpot) + "x perp " + f2(rvolPerp) + "x  " + zPair(partZ, partZs) : "no volume", partLbl)
+    r += 1
+    addRow(dash, r, "ALIGNMENT", str.tostring(aligned) + "/" + str.tostring(alignAvail) + alignDir, alignLbl)
+    r += 1
+
+    wideRow(dash, r, "CONTEXT — slow external feeds", color.new(color.gray, 60), size.tiny)
+    r += 1
+    addRow(dash, r, "FUNDING", fundOK ? sgn2(fundZ) + "σ" : "not wired", fundLbl)
+    r += 1
+    addRow(dash, r, "ETF 5D", etfOK ? sgn2(etfZ) + "σ" : "not wired", etfLbl)
+    r += 1
+    addRow(dash, r, "SOPR", soprOK ? f2(soprD) + "  dev " + sgn2(soprDev) : "unavailable", soprLbl)
+    r += 1
+
+    wideRow(dash, r, "EVIDENCE: DESCRIPTIVE   ACTION: CONTEXT ONLY", color.new(color.gray, 45), size.tiny)
+    r += 1
+    wideRow(dash, r, "Monitors and normalises data. Predicts nothing. Flow is ESTIMATED.", color.new(color.black, 70), size.tiny)
+
+plot(dailyOK ? dSma200 : na, "Daily 200MA", color = color.new(color.orange, 30), linewidth = 2)
+
+var label warn = na
+if barstate.islast
+    string msg = ""
+    if oiLooksNotional
+        why = oiCurSaysNotional ? "the feed reports its currency as " + oiCur : "its magnitude is " + str.tostring(oiRaw, "#") + ", far above the ~1e5 expected for BTC-denominated OI"
+        msg := "⚠ Open interest feed looks USD-denominated — " + why + ". USD notional = base OI x price, so it tracks price rather than positioning. OI readings disabled; point the input at a BASE-UNIT OI symbol."
+    else if not oiOK
+        msg := "⚠ Open interest unavailable — OI readings disabled."
+    else if adapterMisconfigured
+        msg := "⚠ An external adapter is enabled but its Source is still set to close. Set the Source to the other indicator's plot, or turn the adapter off."
+    label.delete(warn)
+    if msg != ""
+        warn := label.new(bar_index, high, msg, yloc = yloc.price, color = color.orange, textcolor = color.white, style = label.style_label_left, size = size.small)
+
+// =============================================================== alerts =====
+// Objective events only, on confirmed 4H closes. No BUY, SELL, REDUCE or
+// DO NOT CHASE — none of those survived the decision-utility audit.
+var bool wasOiExtremeExp = false
+if barstate.isconfirmed
+    if oi24St != oi24Prev and math.abs(oi24St) == 2
+        alert("OI 24H entered " + oiLbl(oi24St) + " (" + sgn2(oiZ24) + "σ, " + pctS(oiChg24h) + ")", alert.freq_once_per_bar_close)
+    if fdSt != fdPrev and fdSt != 0
+        alert("Funding entered " + fundLbl + " (" + sgn2(fundZ) + "σ)", alert.freq_once_per_bar_close)
+    // Impulse alerts: a spike on THIS bar, not a regime change. Fired from the
+    // raw z, and suppressed while the previous bar was already spiking so a
+    // multi-bar excursion reports once rather than every bar.
+    if pmImp != 0 and pmImp[1] == 0
+        alert("Perp premium spike: " + premLbl + " (" + pctS(premium) + ", " + sgn2(premZ) + "σ)", alert.freq_once_per_bar_close)
+    if ptImp != 0 and ptImp[1] == 0
+        alert("Participation spike: " + partLbl + " (" + sgn2(partZ) + "σ)", alert.freq_once_per_bar_close)
+    if oi4Imp != 0 and oi4Imp[1] == 0
+        alert("OI 4H spike: " + oi4Lbl + " (" + sgn2(oiZ4) + "σ, " + pctS(oiChg4h) + ")", alert.freq_once_per_bar_close)
+    // Large OI reduction following an extreme expansion regime.
+    if wasOiExtremeExp and oi24St < 0
+        alert("OI reducing after an extreme expansion regime (" + sgn2(oiZ24) + "σ, " + pctS(oiChg24h) + ")", alert.freq_once_per_bar_close)
+    if etSt != etPrev
+        alert("ETF flow regime -> " + etfLbl + " (" + sgn2(etfZ) + "σ)", alert.freq_once_per_bar_close)
+    if soprOK and ((soprD > 1 and soprD[1] <= 1) or (soprD < 1 and soprD[1] >= 1))
+        alert("SOPR crossed 1 -> " + f2(soprD) + " (" + soprLbl + ")", alert.freq_once_per_bar_close)
+    if trSt != trPrev
+        alert("Slow trend regime -> " + trendLbl + " (" + sgn2(trendDist) + " ATR from the 200D)", alert.freq_once_per_bar_close)
+    wasOiExtremeExp := oi24St == 2 or (wasOiExtremeExp and oi24St > 0)
+
+// ---- test hooks, hidden from the chart and the Data Window ----
+plot(oiZ4,      "t_oiZ4",     display = display.none)
+plot(oiZ24,     "t_oiZ24",    display = display.none)
+plot(premZ,     "t_premZ",    display = display.none)
+plot(partZ,     "t_partZ",    display = display.none)
+plot(rvolSpotZ, "t_rvolSpotZ", display = display.none)
+plot(rvolPerpZ, "t_rvolPerpZ", display = display.none)
+plot(volPct,    "t_volPct",   display = display.none)
+plot(trendDist, "t_trendDist", display = display.none)
+plot(soprD,     "t_sopr",     display = display.none)
+plot(perpDelta, "t_perpDelta", display = display.none)
+plot(anomCount, "t_anomCount", display = display.none)
+plot(aligned,   "t_aligned",  display = display.none)
+plot(alignAvail, "t_alignAvail", display = display.none)
+plot(trSt,      "t_trSt",     display = display.none)
+plot(oi24St,    "t_oi24St",   display = display.none)
+plot(oi4Imp,    "t_oi4Imp",   display = display.none)
+plot(fdSt,      "t_fdSt",     display = display.none)
+plot(pmImp,     "t_pmImp",    display = display.none)
+plot(ptImp,     "t_ptImp",    display = display.none)
+plot(rsImp,     "t_rsImp",    display = display.none)
+plot(rpImp,     "t_rpImp",    display = display.none)
+plot(oiZ24s,    "t_oiZ24s",   display = display.none)
+plot(etSt,      "t_etSt",     display = display.none)
+plot(spSt,      "t_spSt",     display = display.none)
+plot(oiOK ? 1 : 0,   "t_oiOK",   display = display.none)
+plot(oiLooksNotional ? 1 : 0, "t_oiNotional", display = display.none)
+plot(soprOK ? 1 : 0, "t_soprOK", display = display.none)
+plot(flowOK ? 1 : 0, "t_flowOK", display = display.none)
+plot(partOK ? 1 : 0, "t_partOK", display = display.none)
+plot(changed ? 1 : 0, "t_changed", display = display.none)
