@@ -9,7 +9,7 @@
 // The store is DERIVED. `historical/replay.mjs` regenerates it from the vendor archives,
 // and the manifest records the checksum, the row count, and the versions of the code that
 // produced it, so a stale file cannot be silently mixed with a fresh one.
-import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, statSync, readdirSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, statSync, readdirSync, unlinkSync } from 'node:fs';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
@@ -91,8 +91,36 @@ export function readDay(iso) {
   return { header, n, cols };
 }
 
+/**
+ * Read-modify-write the manifest under a lock.
+ *
+ * Days are independent, so replay parallelises across processes — but they all append to
+ * one manifest, and an unlocked read-modify-write loses whichever entry landed second.
+ * A day of compute is too expensive to lose to a race that a lock file prevents.
+ */
+function withManifestLock(fn) {
+  const lock = MANIFEST + '.lock';
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    try { writeFileSync(lock, String(process.pid), { flag: 'wx' }); break; }
+    catch {
+      if (Date.now() > deadline) {                 // a crashed writer left it behind
+        try { unlinkSync(lock); } catch { /* someone else cleaned up */ }
+        continue;
+      }
+      const until = Date.now() + 25;
+      while (Date.now() < until) { /* brief spin; the critical section is a file write */ }
+    }
+  }
+  try { return fn(); } finally { try { unlinkSync(lock); } catch { /* already gone */ } }
+}
+
 export function updateManifest(iso, entry) {
   mkdirSync(dirname(MANIFEST), { recursive: true });
+  return withManifestLock(() => _updateManifest(iso, entry));
+}
+
+function _updateManifest(iso, entry) {
   const m = existsSync(MANIFEST) ? JSON.parse(readFileSync(MANIFEST, 'utf8')) : { storeVersion: STORE_VERSION, days: {} };
   m.days[iso] = { ...entry, writtenAt: new Date().toISOString() };
   m.updatedAt = new Date().toISOString();
