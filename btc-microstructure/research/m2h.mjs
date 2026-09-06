@@ -349,6 +349,18 @@ export function run({ days = storedDays(), out = true } = {}) {
     if (out) writeStatus(r);
     return r;
   }
+  // The pre-registration makes reconciliation a precondition, not a footnote: if the bulk
+  // vendor path does not reproduce a sequence-verified book, nothing computed from it may
+  // be reported as being about the same market our planner measures.
+  const rec = readReconciliation();
+  if (rec?.verdict?.csvReproducesSequenceVerifiedBook === false) {
+    const r = { generated, status: 'HALTED — RECONCILIATION FAILED',
+      reason: 'the vendor CSV path does not reproduce a sequence-verified book, so vendor results may not be carried to the live planner',
+      reconciliation: rec.verdict, directionalGatePassed: false };
+    if (out) writeStatus(r);
+    return r;
+  }
+
   const p = buildPanel(days);
   const coverage = assessCoverage(days, man);
 
@@ -464,11 +476,18 @@ export function run({ days = storedDays(), out = true } = {}) {
     acceptanceEligible: coverage.acceptanceEligible,
     historicalInformationPass: informationPass && coverage.acceptanceEligible,
     historicalPass: fullPass && coverage.acceptanceEligible,
+    reconciliation: rec ? { verdict: rec.verdict, comparedSeconds: rec.csvVsRaw?.compared ?? 0, windows: rec.windows?.length ?? 0 } : null,
     results, gates, economics: econ, backtests, backtestBasis, baselines, execution,
     effectiveTrials: eff, cumulativeEffectiveN: cumulative, multipleTestingT: tThreshold,
     trials, panelRows: p.n };
   if (out) { writeResults(r); writeAudit(man); }
   return r;
+}
+
+function readReconciliation() {
+  const f = new URL('./reconciliation-m2h.json', import.meta.url).pathname;
+  if (!existsSync(f)) return null;
+  try { return JSON.parse(readFileSync(f, 'utf8')); } catch { return null; }
 }
 
 function medianOf(arr) {
@@ -569,7 +588,11 @@ function writeResults(r) {
   L.push(`| by split | dev ${c.bySplit.dev} · val ${c.bySplit.val} · test ${c.bySplit.test} |`);
   L.push(`| 1-second feature rows | ${c.totalRows.toLocaleString()} |`);
   L.push(`| mean valid-book coverage per day | ${f2(c.meanValidBookCoveragePct, 2)}% |`);
-  L.push(`| archives read / feature store | ${(c.archiveBytes / 1073741824).toFixed(1)} GB / ${(c.storeBytes / 1048576).toFixed(0)} MB |`, '');
+  L.push(`| archives read / feature store | ${(c.archiveBytes / 1073741824).toFixed(1)} GB / ${(c.storeBytes / 1048576).toFixed(0)} MB |`);
+  if (r.reconciliation) {
+    L.push(`| reconciliation against the sequence-verified feed | ${r.reconciliation.verdict.pass ? '**PASS**' : 'FAIL'} over ${r.reconciliation.comparedSeconds} pooled seconds |`);
+  }
+  L.push('');
 
   L.push('## Information — coefficient on the future mid return', '');
   L.push(`Primary horizon **${PRIMARY_HORIZON}**. Non-overlapping observations (step = horizon), hour-of-day fixed effects, controls for the previous 30 s return, spread and log near-touch depth, Newey–West at ${HAC_SECONDS} s.`, '');
