@@ -341,3 +341,22 @@ by the rule in §3 it does not require a schema bump, and `SCHEMA_VERSION` stays
 adds a precondition on starting the process and touches no field, no feature and no
 record already written. The prospective sample that began at
 `2026-09-06T08:37:34.395Z` continues unbroken. Covered by two new tests.
+
+### 2026-09-06, after the freeze: additive book methods for the historical path
+
+`collector/book.mjs` sha256 `c60a6b1b…` → **`6177d514f382576ba542e08e98e83251c2bb949e2ad7ae08de0ec8e7bdc00444`**
+
+Study M2-H replays years of vendor L2 through the same book and the same feature engine.
+Three methods were added, none of which changes a single existing line:
+
+- `applyVendor(ev)` — applies levels from a source with no Binance `U`/`u`/`pu`. The live
+  `apply()` is untouched, and the two cannot be confused: the vendor path refuses to
+  become valid without an explicit snapshot.
+- `checkCrossed()` — the crossed-book test, callable on demand. `apply()` still runs it
+  inline on every event exactly as before; the vendor path calls it once per sampled
+  second, because it applies two million events a day and checking each one costs two
+  full book sorts.
+- `pruneFarLevels(pct)` — drops levels beyond ±2% of mid. The collector never calls it.
+
+Live feature values are therefore unchanged and `SCHEMA_VERSION` stays `v1`. The
+prospective sample that began at `2026-09-06T08:37:34.395Z` continues unbroken.

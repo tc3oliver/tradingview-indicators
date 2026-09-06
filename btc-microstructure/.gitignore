@@ -6,3 +6,5 @@ data/collector-state.json
 node_modules/
 *.log
 research/probe/*.err
+data/historical/.scratch/
+data/historical/

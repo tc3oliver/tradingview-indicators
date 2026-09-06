@@ -128,6 +128,72 @@ export class OrderBook {
     return { ok: true };
   }
 
+  /**
+   * Apply levels from a source that carries no Binance sequence ids — a vendor-normalised
+   * historical feed. ADDITIVE, post-freeze: it does not touch `apply()`, so the live path
+   * is bit-for-bit unchanged, and the two can never be confused because this one demands
+   * an explicit snapshot to become valid.
+   *
+   * The exchange's `pu === previous u` rule cannot be checked here because the vendor does
+   * not carry it. What can still be checked is checked: a snapshot is required before any
+   * delta is trusted, timestamps must not regress, and the book must not cross. Those are
+   * weaker guarantees and historical/reconcile.mjs exists to measure how much weaker.
+   */
+  applyVendor(ev) {
+    if (ev.isSnapshot) {
+      if (!this._vendorSnapshotOpen) { this.bids = new Map(); this.asks = new Map(); this._vendorSnapshotOpen = true; }
+      this._applyLevels(ev);
+      this.lastEventMs = ev.ts; this.lastRecvMs = ev.localTs;
+      return { ok: true, snapshot: true };
+    }
+    if (this._vendorSnapshotOpen) {           // first delta after a snapshot closes it
+      this._vendorSnapshotOpen = false;
+      this.valid = true; this.invalidReason = null;
+      this.stats.snapshots = (this.stats.snapshots || 0) + 1;
+    }
+    if (!this.valid) { this.stats.dropped++; return { ok: true, skipped: true, reason: 'no snapshot yet' }; }
+    if (ev.ts < this.lastEventMs) { this.stats.timestampRegressions = (this.stats.timestampRegressions || 0) + 1; }
+    this._applyLevels(ev);
+    this.lastEventMs = ev.ts; this.lastRecvMs = ev.localTs;
+    this.stats.applied++;
+    // No crossed-book check here on purpose. It needs both sides sorted, and a historical
+    // replay applies a couple of million events a day: checking every event costs two full
+    // sorts per event and makes multi-year replay impossible. The caller checks once per
+    // sampled second instead, which is the only moment anything reads the book anyway.
+    return { ok: true };
+  }
+
+  /** Crossed-book check, on demand. Used by the replay loop at each sampled second. */
+  checkCrossed() {
+    const b = this.bestBid(), a = this.bestAsk();
+    if (b && a && b[0] >= a[0]) {
+      this.stats.crossed++;
+      this.invalidate(INVALID_REASONS.CROSSED);
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Drop levels further than `bandPct` from mid.
+   *
+   * Binance's diff stream stops maintaining levels outside the depth it tracks, so a book
+   * replayed for hours accumulates phantom levels that the exchange abandoned long ago —
+   * they are never updated and never removed. Pruning them is a fidelity improvement, not
+   * a shortcut, and it keeps the sort bounded. Only the vendor replay path calls it: the
+   * live collector's book is untouched, so live feature values are unchanged.
+   */
+  pruneFarLevels(bandPct = 0.02) {
+    const b = this.bestBid(), a = this.bestAsk();
+    if (!b || !a) return 0;
+    const mid = (b[0] + a[0]) / 2, lo = mid * (1 - bandPct), hi = mid * (1 + bandPct);
+    let dropped = 0;
+    for (const p of this.bids.keys()) if (p < lo) { this.bids.delete(p); dropped++; }
+    for (const p of this.asks.keys()) if (p > hi) { this.asks.delete(p); dropped++; }
+    if (dropped) this._sortedBids = this._sortedAsks = null;
+    return dropped;
+  }
+
   _applyLevels(ev) {
     for (const [p, q] of ev.b || []) this._set(this.bids, +p, +q);
     for (const [p, q] of ev.a || []) this._set(this.asks, +p, +q);

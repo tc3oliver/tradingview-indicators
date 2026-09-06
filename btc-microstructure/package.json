@@ -10,6 +10,13 @@
     "freeze": "node collector/freeze.mjs",
     "probe": "node research/probe/probe.mjs",
     "test": "node --max-old-space-size=8192 tests/run.mjs",
-    "test:m1": "node --max-old-space-size=8192 research/smoke.mjs"
+    "test:m1": "node --max-old-space-size=8192 research/smoke.mjs",
+    "m2h:days": "node historical/cli.mjs days",
+    "m2h:replay": "node --max-old-space-size=8192 historical/cli.mjs replay",
+    "m2h:verify": "node historical/cli.mjs verify",
+    "m2h:status": "node historical/cli.mjs status",
+    "m2h:reconcile": "node historical/cli.mjs reconcile",
+    "research:m2h": "node --max-old-space-size=8192 research/m2h.mjs",
+    "replay": "node historical/replay-server.mjs"
   }
 }
