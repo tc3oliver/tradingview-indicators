@@ -117,6 +117,12 @@ a realistic fill model it earns **+0.236 bp** per trade gross against **10 bp** 
 commission: **−9.764 bp** net, which is indistinguishable from entering at
 random. Real information, no tradable edge.
 
+That study is not finished — its validation split is only three days and its
+locked test split is empty, so the information gates were never evaluable. It is
+reported as `PRELIMINARY — BLOCKED`, not as a pass or a fail. The economics,
+though, are a ratio rather than a p-value: more data could move the t-statistic,
+but not by the factor of forty the edge would need.
+
 So the panel says so, every bar, on its last row.
 
 Also absent, deliberately: composite scores, confidence percentages,

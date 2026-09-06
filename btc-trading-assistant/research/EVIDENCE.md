@@ -57,8 +57,8 @@ most tempting one to misuse.
 
 | | |
 |---|---|
-| Depth imbalance, development split | t = 14.66 |
-| Depth imbalance, validation split | t = 6.38 |
+| Depth imbalance, development split (23 days) | t = 14.66 |
+| Depth imbalance, validation split (3 days) | t = 6.38 |
 | Rank IC | 0.0933 |
 | Decile monotonicity | 0.85 |
 | Top-minus-bottom decile | **1.246 bp** |
@@ -76,10 +76,21 @@ either: waiting 5 s or 30 s moves implementation shortfall by ~0.02 bp against a
 pre-registered 0.5 bp threshold, because ~5 bp of the 5.115 bp shortfall is
 commission and no timing decision can touch it.
 
-M2-H's formal status remains **PRELIMINARY — BLOCKED BY HISTORICAL DATA ACCESS**
-(26 of 2,301 days; the free tier serves only the first day of each month). Being
-short of a formal PASS/FAIL is *not* a reason to ship the feature anyway. The
-economic gap is not marginal.
+Two caveats belong with those numbers, and they cut in opposite directions.
+
+The out-of-sample side is thin: validation is **three days** — 2024-07-01,
+2024-08-01 and 2024-09-01 — and the locked test split is **empty**, so the four
+information gates were never *evaluable* at all. Only the economic gate was
+independently computed, and it failed. M2-H's formal status is therefore
+**PRELIMINARY — BLOCKED BY HISTORICAL DATA ACCESS** (26 of 2,301 days; the free
+tier serves only the first day of each month), and it should not be read as a
+completed falsification of the information claim.
+
+But being short of a formal PASS/FAIL is *not* a reason to ship the feature
+anyway. The economic gap is not marginal and does not depend on sample size: a
+gross edge of 0.236 bp against 10 bp of commission is a ratio, not a p-value.
+More data could raise or lower the t-statistic; it cannot make the edge forty
+times bigger.
 
 ---
 
