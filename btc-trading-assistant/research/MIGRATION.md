@@ -254,3 +254,67 @@ covered.
 | Prospective identity | freeze and prospective JSON before/after | unchanged |
 | No double ingestion | full re-read of the depth archive | 0 duplicates in 142,714 events |
 | Published indicator untouched | git tree hash before/after | see the final report |
+
+---
+
+## 7. v1.1 — what changed, and what was checked to prove it did not
+
+v1.0 consolidated five projects into one. v1.1 rebuilt the product layer on top
+of that consolidation without touching the research layer. The rule was the same
+one that governed the consolidation: **nothing that failed a study may reappear
+as a feature**, and every claim that a measurement is unchanged must be
+demonstrated rather than asserted.
+
+### Market context: unchanged, and proven so
+
+The bar-by-bar differential against the frozen `BTC 4H Market Radar v3.3` still
+runs and still passes in full — 45 measurements over 1,500 bars, all four
+adapters live. Discrete state is bit-identical: feed status codes, direction
+codes, hysteresis levels, the OI units guard, the anomaly count and the whole
+event log (1,366 accepted / 1 suppressed). Continuous values differ only within
+the offline runtime's measured ten-decimal rounding, worst residue 3.08e-4
+relative, which moves no discrete state.
+
+That matters more in v1.1 than it did in v1.0, because v1.1 **froze the
+normalisation windows and the hysteresis thresholds into constants**. Turning a
+setting into a constant is exactly the kind of change that can silently alter a
+default, so the differential is the evidence that it did not.
+
+### Trade plan: identical with costs off, new behaviour tested separately
+
+The planner differential against the frozen `Trade Risk Planner v1.0` runs with
+**Include costs in position sizing OFF**, across the same eight configurations.
+With costs off, risk per unit collapses to the gross stop distance and the
+arithmetic is v1.0's exactly — entry, stop, quantity, notional, risk, 1R and 3R
+all identical.
+
+Cost-aware sizing could not be compared against a baseline that never had it, so
+it is verified against **independently recomputed ground truth** instead: every
+quantity is calculated again in JavaScript from the published formulas and
+checked against the Pine, over a grid covering long and short, manual and ATR
+stops, live and manual entry, percent and fixed-cash risk, costs on and off, the
+exposure cap binding, a manual target, asymmetric per-side costs and zero rates.
+Break-even is checked by *simulating the exit* and confirming the net is exactly
+zero, not by re-reading the formula that produced it.
+
+Turning costs on and then calling the result identical to v1.0 would have been
+comparing two different questions and reporting the answer as a pass.
+
+### Intentional removals
+
+| Removed | Why | Where its job went |
+|---|---|---|
+| **N-bar trailing reference** (`trailRef`, `showTr`, `trailN`) | A mechanical line that made no claim and answered "how far is price from where this trade stops being alive" badly. | The ACTIVE view's `TO STOP`, in R. |
+| **`AUTOMATIC SIGNAL — NONE VALIDATED` row** | Spent the most valuable line on the panel restating something that never changes. | The footer `DISCRETIONARY MODE · NO AUTO ENTRIES`, present in every mode. The meaning is identical; the tests now assert the *behaviour* (the Decision UI issues no directional recommendation) rather than the exact phrase. |
+| **23 research parameters as inputs** — the percentile/z window, the volatility percentile lookback, the RVOL window and all twenty hysteresis thresholds | They are research-defined semantics, not preferences. A user retuning them and then comparing their panel with someone else's is the failure the freeze prevents. | Frozen constants, still substitutable by the test suite. |
+| **57 hidden `t_*` test plots** | Production sat at 63 of Pine's 64 plot outputs *because of its own tests*. | `tests/build-instrumented.mjs`, appended at test time. Production is now 1 plot. |
+| **3 `alertcondition()` outputs** | Consumed output slots and could not carry a computed message. | `alert()` with a message built at fire time, plus a per-level duplicate guard. |
+
+### What did not change
+
+Nothing under `research/` or `tools/microstructure/`. The M2 prospective
+collector, its freeze marker and `M2_PROSPECTIVE_START =
+2026-09-06T08:37:34.395Z` were not touched by this release: v1.1 is a product
+change, and a product change has no business moving a research boundary. The
+`session-highs-and-lows-indicator/` directory was not touched either — its git
+tree hash is reported unchanged in the release report.

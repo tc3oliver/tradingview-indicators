@@ -13,8 +13,14 @@
 import { PineTS, BaseProvider } from 'pinets';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { instrument } from './build-instrumented.mjs';
 
 export const SRC_URL = new URL('../main.pine', import.meta.url);
+// RAW is the SHIPPED file, byte for byte. Every assertion about what the
+// product contains — plot count, request count, absent test hooks, absent
+// research vocabulary — is made against this and never against the
+// instrumented build, because checking a ceiling on a file nobody pastes into
+// TradingView would be checking nothing.
 export const RAW = readFileSync(SRC_URL, 'utf8');
 export const HASH = createHash('sha256').update(RAW).digest('hex');
 
@@ -41,8 +47,14 @@ export const rewrite = (src, re, to, name) => {
 
 export const stripGuard = (src) => rewrite(src, /if not tfOK\n\s+runtime\.error\([^\n]*\n/, '', 'tf guard');
 
-export const BASE = stripGuard(RAW);
+// THE BUILD EVERY BEHAVIOURAL TEST RUNS. Production source, guard stripped for
+// the offline runtime, plus the observation layer appended. The two are kept
+// separate on purpose: RAW is what ships, BASE is what can be measured.
+export const PROD = stripGuard(RAW);
+export const BASE = instrument(PROD);
 
+// The frozen v1.0 baselines carry their own hooks and are never instrumented —
+// they are fixtures, not sources under development.
 let baseline = stripGuard(BASELINE_RADAR);
 baseline = rewrite(baseline,
   /\[perpUp, perpDn\] = request\.security_lower_tf\([^\n]*\n\[spotUp, spotDn\] = request\.security_lower_tf\([^\n]*\n/,
@@ -55,12 +67,44 @@ export const BASELINE = baseline;
 // deterministic expressions at exactly the point where the user's plot would
 // arrive. Everything downstream (z, percentile, ladder, direction, freshness,
 // labels, anomalies, events, alerts) is the real code path.
-export const enable = (src, label) =>
-  rewrite(src, new RegExp(`input\\.bool\\(false, "Enable ${label} adapter"`), `input.bool(true, "Enable ${label} adapter"`, `enable ${label}`);
+// v1.1 renamed the adapter toggles (they sit under a master switch now) while
+// the frozen v1.0 baselines still carry the old labels. One helper serves both
+// so the differential does not need two vocabularies.
+const ADAPTER_LABEL = {
+  funding: ['Funding adapter', 'Enable funding adapter'],
+  'ETF flow': ['ETF flow adapter', 'Enable ETF flow adapter'],
+  'long-liquidation': ['Long-liquidation adapter', 'Enable long-liquidation adapter'],
+  'short-liquidation': ['Short-liquidation adapter', 'Enable short-liquidation adapter'],
+};
+export const enable = (src, label) => {
+  for (const l of ADAPTER_LABEL[label] ?? []) {
+    const re = new RegExp(`input\\.bool\\(false, "${l}"`);
+    if (re.test(src)) return src.replace(re, `input.bool(true, "${l}"`);
+  }
+  throw new Error(`enable "${label}" no longer matches its source — fix the harness`);
+};
+// v1.1's master switch. Absent from the baselines, which had no such thing, so
+// a miss there is expected rather than a harness fault.
+export const extMaster = (src) =>
+  src.replace(/input\.bool\(false, "Enable external context"/, 'input.bool(true, "Enable external context"');
 export const wire = (src, label, expr) =>
   rewrite(src, new RegExp(`\\w+\\s*= input\\.source\\(close, "  ${label}"[^\\n]*\\n`), `${expr}\n`, `wire ${label}`);
 export const setInput = (src, decl, from, to, name) =>
   rewrite(src, new RegExp(`input\\.${decl}\\(${from},`), `input.${decl}(${to},`, name);
+// v1.1 froze the research-defined windows and thresholds into constants. They
+// are no longer settings, so the suite substitutes them by rewriting the
+// declaration — testable at other values without being tunable in production.
+export const setConst = (src, name, v) =>
+  rewrite(src, new RegExp(`^${name}(\\s*)= [^\\n]+$`, 'm'), `${name}$1= ${v}`, `const ${name}`);
+// The offline runtime returns na for syminfo.pointvalue, syminfo.mincontract
+// and syminfo.mintick, and always reports a standard chart. Each of those is
+// read at exactly ONE site in main.pine, deliberately, so the value can be
+// substituted there — the same trick the input.source() adapters use. What is
+// under test is the GUARD, and the guard is downstream of the substitution.
+export const symOverride = (src, name, expr) =>
+  rewrite(src, new RegExp(`^(${name}\\s*)= syminfo\\.\\w+$`, 'm'), `$1= ${expr}`, `syminfo ${name}`);
+export const chartStandard = (src, expr) =>
+  rewrite(src, /^stdChart = chart\.is_standard$/m, `stdChart = ${expr}`, 'chart.is_standard');
 export const asMode = (src, m) =>
   m === 'Decision' ? src : rewrite(src, /input\.string\("Decision", "Detail level"/, `input.string("${m}", "Detail level"`, `mode ${m}`);
 
@@ -109,7 +153,7 @@ export function makeProvider(byTf, opts = {}) {
   const lookup = (id, tf) => (byTf[tf] ?? byTf['240'])?.[String(id).split(':').pop()];
   return new (class extends BaseProvider {
     constructor() { super({ requiresApiKey: false, providerName: 'Local' }); }
-    getSupportedTimeframes() { return new Set(['240', '60', '15']); }
+    getSupportedTimeframes() { return new Set(['240', '60', '15', '5']); }
     async _getMarketDataNative(id, tf) { return lookup(id, tf) ?? []; }
     async getSymbolInfo(id) {
       // A base-unit OI feed is not a currency amount, so TradingView reports
@@ -143,8 +187,12 @@ export const mean = (a) => a.reduce((s, x) => s + x, 0) / a.length;
 export const sd = (a) => { const m = mean(a); return Math.sqrt(mean(a.map((x) => (x - m) ** 2))); };
 export const fin = (a) => a.filter(Number.isFinite);
 
-// Bit order is fixed in main.pine and mirrored here.
-export const BOOL_BITS = { tfOK: 1, oiObs: 2, partOK: 4, oiOK: 8, oiNotional: 16, changed: 32, newCtx: 64, planOK: 128, capped: 256 };
+// Bit order is fixed in tests/build-instrumented.mjs and mirrored here.
+export const BOOL_BITS = {
+  tfOK: 1, oiObs: 2, partOK: 4, oiOK: 8, oiNotional: 16, changed: 32, newCtx: 64,
+  planOK: 128, capped: 256, planActive: 512, costOn: 1024, stdChart: 2048,
+  qtyTooSmall: 4096, linearOK: 8192, planFatal: 16384,
+};
 export const bser = (ctx, name, len) =>
   ser(ctx, 't_boolPack', len).map((v) => (Number.isFinite(v) ? ((Math.round(v) & BOOL_BITS[name]) ? 1 : 0) : NaN));
 

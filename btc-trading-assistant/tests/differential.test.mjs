@@ -30,9 +30,18 @@
 // are ABSENT from this build by decision, not by accident, and are recorded as
 // removals in research/MIGRATION.md.
 
+// v1.1 NOTE — WHAT "IDENTICAL" MEANS ONCE COSTS EXIST.
+// The planner differential runs with "Include costs in position sizing" OFF,
+// where riskPerUnit collapses to the gross stop distance and the arithmetic is
+// v1.0's exactly. That is the honest comparison: cost-aware sizing is NEW
+// behaviour and cannot be checked against a baseline that never had it, so it is
+// verified against independently computed ground truth in main.test.mjs instead.
+// Turning costs on and then declaring the result identical would be comparing
+// two different questions and calling the answer a pass.
+
 import {
   rows, run, ser, eq, check, note, section, fin,
-  BASE, BASELINE, BASELINE_PLANNER, rewrite, enable, wire, asMode, decode, unpack, bser,
+  BASE, BASELINE, BASELINE_PLANNER, rewrite, enable, extMaster, wire, asMode, setConst, decode, unpack, bser,
 } from './harness.mjs';
 
 // ---------------------------------------------------------------- helpers ---
@@ -41,7 +50,7 @@ const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // default must not be reported as a stale-harness failure.
 const sub = (src, re, to) => src.replace(re, to);
 const setNum = (src, label, v) =>
-  sub(src, new RegExp(`input\\.(float|int)\\([^,]+,\\s*"${esc(label)}"`), (m, t) => `input.${t}(${v}, "${label}"`);
+  sub(src, new RegExp(`input\\.(float|int|price)\\([^,]+,\\s*"${esc(label)}"`), (m, t) => `input.${t}(${v}, "${label}"`);
 const setStr = (src, label, v) =>
   sub(src, new RegExp(`input\\.string\\("[^"]*",\\s*"${esc(label)}"`), `input.string("${v}", "${label}"`);
 const setBool = (src, label, v) =>
@@ -56,7 +65,9 @@ const LIQS = 'extLiqS    = math.abs(high - low) * volume * 0.7';
 const FUND = 'extFunding = (close - ta.sma(close, 20)) / ta.sma(close, 20) * 0.05';
 const ETF  = 'extEtf     = (close - close[1]) * 100.0';
 const withAdapters = (src) => {
-  let x = setBool(src, '  Long and short liquidations share one source and unit', true);
+  // extMaster is v1.1's master switch and is absent from the baselines, which
+  // had no such thing; it is a no-op there by design.
+  let x = extMaster(setBool(src, '  Long and short liquidations share one source and unit', true));
   for (const l of ['long-liquidation', 'short-liquidation', 'funding', 'ETF flow']) x = enable(x, l);
   x = wire(x, 'Long liquidations', LIQL);
   x = wire(x, 'Short liquidations', LIQS);
@@ -68,8 +79,11 @@ const withAdapters = (src) => {
 // At its shipped 2190 the volatility percentile is na over any window this suite
 // can afford, so comparing it would be vacuous — na === na proves nothing about
 // the arithmetic. Both builds get the same reduced window, which exercises the
-// real ta.percentrank path in the reference context.
-const shortVolWin = (src) => setNum(src, 'Volatility percentile lookback', 400);
+// real ta.percentrank path in the reference context. v1.1 froze the window into
+// a constant; the baseline still carries it as an input, so each is substituted
+// in its own idiom and the two end up at the same 400.
+const shortVolWin = (src) =>
+  /^VOL_PCT_WIN/m.test(src) ? setConst(src, 'VOL_PCT_WIN', 400) : setNum(src, 'Volatility percentile lookback', 400);
 
 // Values that never cross the offline runtime's rounding boundary in EITHER
 // build: computed inline on chart bars from request.security scalars, or
@@ -219,14 +233,30 @@ export async function plannerDifferential() {
     { dir: 'Long',  entry: 0,     stop: 0,     eq: 500,    risk: 0.25, lev: 10.0, why: 'small account, high cap' },
   ];
 
+  // v1.0 encoded "follow the live price" and "derive the stop from ATR" as a
+  // magic zero. v1.1 replaced both with an explicit mode, which is the whole
+  // point of §2 — so the same CASE is expressed in each build's own idiom and
+  // the two must still produce the same numbers.
   const applyPlan = (src, c, isNew) => {
     let x = src;
-    if (isNew) x = setBool(x, 'Enable trade plan', true);
+    if (isNew) {
+      x = setBool(x, 'Enable trade plan', true);
+      // Costs OFF: this compares the arithmetic v1.0 actually had.
+      x = setBool(x, 'Include costs in position sizing', false);
+      x = setStr(x, 'Entry', c.entry > 0 ? 'Manual price' : 'Current price');
+      x = setStr(x, 'Stop', c.stop > 0 ? 'Manual price' : 'ATR distance');
+      x = setNum(x, '  Entry price', c.entry.toFixed(1));
+      x = setNum(x, '  Stop price', c.stop.toFixed(1));
+      x = setNum(x, '  ATR multiple', '1.5');
+      x = setNum(x, '  Risk (%)', c.risk.toFixed(2));
+    } else {
+      x = setNum(x, 'Entry price (0 = current price)', c.entry.toFixed(1));
+      x = setNum(x, 'Invalidation price (0 = auto)', c.stop.toFixed(1));
+      x = setNum(x, 'Auto-stop distance (ATR multiples)', '1.5');
+      x = setNum(x, 'Risk per trade (%)', c.risk.toFixed(2));
+    }
     x = setStr(x, 'Direction', c.dir);
-    x = setNum(x, 'Entry price (0 = current price)', c.entry.toFixed(1));
-    x = setNum(x, 'Invalidation price (0 = auto)', c.stop.toFixed(1));
     x = setNum(x, 'Account equity', c.eq.toFixed(1));
-    x = setNum(x, 'Risk per trade (%)', c.risk.toFixed(2));
     x = setNum(x, 'Max exposure (x equity)', c.lev.toFixed(1));
     return x;
   };
@@ -243,7 +273,11 @@ export async function plannerDifferential() {
 
     const aPlan = bser(A, 'planOK'), aCap = bser(A, 'capped');
     const bPlan = ser(B, 't_planOK'), bCap = ser(B, 't_capped');
-    const direct = [['t_entry', 't_entry'], ['t_stop', 't_stop'], ['t_qty', 't_qty'], ['t_trail', 't_trail'], ['t_patr', 't_atr']];
+    // t_trail is absent: v1.1 removed the N-bar trailing reference, whose job —
+    // "how far is price from where this trade stops being alive" — is done
+    // properly by the ACTIVE view's distance-to-stop in R. Recorded as an
+    // intentional removal in research/MIGRATION.md, not dropped quietly.
+    const direct = [['t_entry', 't_entry'], ['t_stop', 't_stop'], ['t_qty', 't_qty'], ['t_patr', 't_atr']];
 
     let bad = 0, live = 0;
     for (let i = 0; i < rows.length; i++) {

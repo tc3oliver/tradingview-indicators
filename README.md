@@ -2,13 +2,18 @@
 
 ## BTC Trading Assistant
 
-One BTC TradingView indicator for:
+One BTC TradingView indicator, plan-first since v1.1:
 
-- market context
-- volatility / positioning awareness
-- manual trade planning
-- fixed-risk position sizing
-- R targets
+- confirmed 4H market context — trend, volatility, positioning
+- interactive draggable entry / stop / target
+- cost-aware, fixed-risk position sizing
+- break-even, risk and reward zones, R targets
+- live R and estimated net P&L once the trade is on
+- plan alerts
+
+It does not generate buy or sell signals, and says so on the panel every bar.
+Eight pre-registered studies looked for a tradable directional edge and none found
+one — see [`btc-trading-assistant/research/EVIDENCE.md`](./btc-trading-assistant/research/EVIDENCE.md).
 
 Path:
 `btc-trading-assistant/main.pine`

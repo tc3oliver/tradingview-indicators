@@ -1,5 +1,93 @@
 # Changelog
 
+## 1.1.0
+
+A plan-first release. Nothing in it claims to predict anything: every addition
+below is arithmetic, presentation, or a guard against printing something
+plausible and wrong.
+
+### Added
+
+- **Plan-first workflow.** With a plan enabled, the plan is the subject of the
+  Decision panel and market context compresses to one line. With no plan, the
+  market gets three full rows as before.
+- **Interactive draggable levels.** Entry, stop and target are `input.price`
+  fields — drag the marker on the chart or type the number. Size, risk, cost,
+  targets, break-even and the drawn zones all update as you move them.
+- **Cost-aware position sizing.** `Entry cost (bp)` and `Exit cost (bp)`,
+  default 5.0 each, meaning commission plus expected slippage for one side. With
+  costs in sizing, the risk budget covers the stop loss *and* the round trip, so
+  being stopped out costs what you said you would risk. It is not a live fee
+  lookup: enter your own execution cost. Sizing with costs excluded remains
+  available and the panel still reports what they would be.
+- **Break-even price**, with its distance from entry in basis points, printed and
+  optionally drawn as a dotted line.
+- **Plan lifecycle.** `Planning` shows what the position would be and how far
+  price is from your entry; `Active` shows live R, estimated net P&L, and
+  distance to the stop and the target. Active requires a manual entry price — the
+  price you actually filled at — and says so rather than following the market.
+- **Plan alerts.** Confirmed bars only, once per level: entry while Planning,
+  stop and target while Active, with 1R/2R/3R separately opt-in. A level re-arms
+  when it moves, so dragging a stop arms it again while price oscillating around
+  an unchanged stop fires once.
+- **Risk and reward zones** drawn on the chart as two faint boxes, entry to stop
+  and entry to target, alongside the level lines and the R ladder.
+- **5m support.** Verified by the offline suite — context clock, completed-bar
+  guarantee and absence of lookahead all asserted on synthetic 5m bars. It has
+  not been confirmed in the Pine Editor, which is the gate for listing it in the
+  README as supported — `TRADINGVIEW-VALIDATION.md` carries it as manual item 3.
+- **Non-standard-chart guard.** Heikin Ashi, Renko, Line Break, Kagi and Point &
+  Figure do not plot real prices, so with a live entry the plan refuses rather
+  than size a real quantity from a synthetic one. Setting a manual entry price
+  unblocks it. Market context is unaffected — it comes from `request.security` on
+  the reference symbol.
+- **Non-linear-instrument guard.** The sizing arithmetic assumes one quote unit
+  per unit of price, which is true of BTC spot and USDⓈ-M linear perpetuals and
+  false of inverse (coin-margined) futures. A point value other than 1 blocks the
+  plan. A runtime that reports no point value is treated as unknown and allowed
+  through.
+- **Adaptive light/dark palette** derived from `chart.bg_color` (Rec. 601 luma).
+  No colour inputs.
+
+### Changed
+
+- **The standing disclaimer changed form, not meaning.** The full-width
+  `AUTOMATIC SIGNAL — NONE VALIDATED` row is now the footer `DISCRETIONARY MODE ·
+  NO AUTO ENTRIES`. It spent the panel's most valuable line restating something
+  that never changes. There is still no validated automatic entry model, and none
+  is claimed.
+- **Production and test Pine separated.** The offline suite observes values by
+  plotting them, which until now meant 57 hidden test plots living in
+  `main.pine` and a production script sitting at 63 of Pine's 64 plot outputs.
+  They now live in `tests/build-instrumented.mjs` and are appended at test time.
+  Production is down to **1** plot output. What you paste into TradingView is the
+  product.
+- **Settings simplified.** The normalisation windows and the hysteresis
+  thresholds are now frozen constants rather than inputs. Every one was chosen by
+  a study in `research/`; they are research-defined semantics, not preferences,
+  and exposing them invited retuning the meaning of a reading. The offline suite
+  substitutes them by rewriting those lines, so they stay testable at other
+  values without being tunable in production.
+- **Panel size** (Compact / Normal / Large) scales the Decision view. Detailed
+  and Debug stay one step smaller — they are reference layouts with four times
+  the rows.
+- Decision rows that say nothing are absent rather than printed. `WATCH` appears
+  only when there is something to watch.
+
+### Removed
+
+- **Trailing reference.** Its job is done by the Active stage's distance to stop
+  in R, which is the same information in the unit the rest of the panel uses.
+
+### Notes
+
+R is the gross stop distance in price, unchanged from v1.0, so a 2R target means
+the price it has always meant. With costs in sizing, the money lost at the stop
+is slightly more than 1R; the RISK row prints that multiple.
+
+Still requires a chart at or below 4H. Offline verification is not a TradingView
+compile — see `TRADINGVIEW-VALIDATION.md`.
+
 ## 1.0.0
 
 First release. One BTC indicator, replacing two published ones and three
