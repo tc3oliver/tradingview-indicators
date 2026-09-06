@@ -8,7 +8,7 @@
 // One partition per UTC day per kind. The manifest records, for every partition, the
 // event count, first and last event time, sequence gaps, resyncs, byte size, sha256 of
 // the finished file, and the collector and schema versions that produced it.
-import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, appendFileSync, statSync, readdirSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, appendFileSync, statSync, readdirSync, unlinkSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { createHash as hash } from 'node:crypto';
 import { join } from 'node:path';
@@ -21,6 +21,8 @@ export class EventWriter {
     this.root = root; this.manifestPath = manifestPath; this.statePath = statePath;
     this.flushMs = flushMs; this.maxBatch = maxBatch;
     mkdirSync(root, { recursive: true });
+    this.lockPath = join(root, '..', '.collector.lock');
+    this._lock();
     this.manifest = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')) : { schemaVersion: SCHEMA_VERSION, symbol: SYMBOL, partitions: {} };
     this.state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : { lastU: {}, lastAggId: null };
     this.buffers = new Map();       // `${day}/${kind}` -> array of records
@@ -28,6 +30,22 @@ export class EventWriter {
     this.dirty = false;
     this._timer = setInterval(() => this.flush(), flushMs);
     this._timer.unref?.();
+  }
+
+  // Two collectors writing the same partitions would duplicate every raw event. The
+  // lock makes that a clear error instead of a corrupt archive discovered weeks later.
+  _lock() {
+    if (existsSync(this.lockPath)) {
+      const pid = Number(readFileSync(this.lockPath, 'utf8').trim());
+      let alive = false;
+      try { process.kill(pid, 0); alive = true; } catch { alive = false; }
+      if (alive) throw new Error(`a collector is already running (pid ${pid}). Stop it first, or open the planner it is already feeding. Lock: ${this.lockPath}`);
+      unlinkSync(this.lockPath);      // stale lock from a killed process
+    }
+    writeFileSync(this.lockPath, String(process.pid));
+    const release = () => { try { if (existsSync(this.lockPath) && readFileSync(this.lockPath, 'utf8').trim() === String(process.pid)) unlinkSync(this.lockPath); } catch { /* going down anyway */ } };
+    this._release = release;
+    process.once('exit', release);
   }
 
   key(day, kind) { return `${day}/${kind}`; }
@@ -115,7 +133,7 @@ export class EventWriter {
     return total;
   }
 
-  close() { clearInterval(this._timer); this.flush(); }
+  close() { clearInterval(this._timer); this.flush(); this._release?.(); }
 }
 
 export { dayOf };

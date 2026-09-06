@@ -107,6 +107,26 @@ describe('event log', () => {
     rmSync(d, { recursive: true, force: true });
   });
 
+  test('a second collector on the same store is refused, not silently duplicated', () => {
+    const d = tmp(), w = mk(d);
+    let msg = '';
+    try { mk(d); } catch (e) { msg = e.message; }
+    ok(/already running/.test(msg), `expected a lock error, got: ${msg || '(no error)'}`);
+    w.close();
+    const w2 = mk(d);                       // the lock is released on close
+    w2.close();
+    rmSync(d, { recursive: true, force: true });
+  });
+
+  test('a stale lock from a dead process is reclaimed', () => {
+    const d = tmp(), w = mk(d);
+    w.close();
+    writeFileSync(join(d, '.collector.lock'), '999999');   // a pid that is not running
+    const w2 = mk(d);
+    w2.close();
+    rmSync(d, { recursive: true, force: true });
+  });
+
   test('disk usage is reported', () => {
     const d = tmp(), w = mk(d);
     w.write('depth', { u: 1, recvMs: day('2026-09-06T00:00:00Z') });

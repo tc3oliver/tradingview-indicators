@@ -318,3 +318,26 @@ costs to execute right now, and when the question of whether the book predicts t
 30 seconds has been answered with evidence or is honestly marked as still collecting.
 Producing a LONG or SHORT is not the completion standard, and no PASS will be
 manufactured to produce one.
+
+
+---
+
+## Appendix — post-freeze changes
+
+The frozen sections above are not edited. Any change to the code they hash is recorded
+here instead, with the reason and the judgement about whether it touches data semantics.
+
+### 2026-09-06, after the freeze: collector lock
+
+`collector/writer.mjs` sha256 `21480fbe…` → **`b2485a20e9288739d649db96418b73f03f776dd6b0172c81068988e7f9f57f63`**
+
+Two collector processes pointed at the same data directory would both append to the same
+partitions and duplicate every raw event — an archive corrupted silently and discovered
+weeks later. The writer now takes a pid lock on the data directory and refuses to start
+if a live collector already holds it; a lock left by a killed process is reclaimed.
+
+**This changes no event semantics, no sequence semantics and no event assignment**, so
+by the rule in §3 it does not require a schema bump, and `SCHEMA_VERSION` stays `v1`. It
+adds a precondition on starting the process and touches no field, no feature and no
+record already written. The prospective sample that began at
+`2026-09-06T08:37:34.395Z` continues unbroken. Covered by two new tests.

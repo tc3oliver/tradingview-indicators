@@ -1,0 +1,11 @@
+{
+  "study": "M2",
+  "symbol": "BTCUSDT",
+  "schemaVersion": "v1",
+  "collectorVersion": "1.0.0",
+  "commit": "64da58399bfb6b50f8901b7d2dd1c17ae8903130",
+  "frozenAt": "2026-09-06T08:37:24.000Z",
+  "frozenAtMs": 1788683844000,
+  "subject": "Pre-register Study M2 and build the BTC Execution Planner and L2 collector",
+  "note": "Prospective data begins at the first valid order book observed after frozenAtMs. Anything earlier is WARMUP / ENGINEERING DATA and is labelled as such in every record."
+}

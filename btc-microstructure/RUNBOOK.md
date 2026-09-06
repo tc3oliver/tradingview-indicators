@@ -72,7 +72,7 @@ writes `research/RESULTS-M2.md`. **No code needs to change in between.**
 ## Tests
 
 ```bash
-npm test        # 89 checks: book, execution, storage, prospective boundary, research, UI
+npm test        # 91 checks: book, execution, storage, prospective boundary, research, UI
 npm run test:m1 # the earlier study's estimator and feature invariants
 ```
 
@@ -100,6 +100,13 @@ usually means the process is CPU-starved and dropping messages behind the socket
 
 **Disk.** `data/l2/` is not committed and is not pruned automatically. Check the
 integrity panel or `data/MANIFEST.json` → `diskBytes`.
+
+**Only one collector at a time.** `npm start` runs a collector of its own, so do not
+also run `npm run collector` against the same data directory — the second process is
+refused with `a collector is already running (pid …)` rather than being allowed to
+double-write the archive. Pick one: `npm start` if you want the UI, `npm run collector`
+if you want headless capture. A lock left behind by a killed process is reclaimed
+automatically.
 
 **Restarting is safe** at any time. The collector records the last durably written
 update id and aggregate trade id and skips anything at or below them, so no record is

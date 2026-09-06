@@ -1,0 +1,50 @@
+{
+  "generated": "2026-09-06T08:43:49.492Z",
+  "status": "COLLECTING — INSUFFICIENT",
+  "schemaVersion": "v1",
+  "reason": "the pre-registered minimum prospective sample has not been reached; no statistical outcome analysis was run",
+  "directionalGatePassed": false,
+  "economicGatePassed": false,
+  "coverage": {
+    "prospectiveStart": "2026-09-06T08:37:34.395Z",
+    "days": 1,
+    "weekdayDays": 0,
+    "weekendDays": 1,
+    "validSeconds": 268,
+    "validHours": 0.07444444444444444,
+    "perDay": {
+      "2026-09-06": 268
+    },
+    "diskBytes": 1013544,
+    "gate": {
+      "minCalendarDays": 30,
+      "minWeekdayDays": 20,
+      "minWeekendDays": 8,
+      "minValidBookHours": 600,
+      "minVolatilityStates": 3
+    },
+    "met": {
+      "calendarDays": false,
+      "weekdayDays": false,
+      "weekendDays": false,
+      "validBookHours": false,
+      "volatilityStates": false
+    },
+    "sampleGatePassed": false,
+    "progress": {
+      "calendarDays": "1 / 30",
+      "weekdayDays": "0 / 20",
+      "weekendDays": "1 / 8",
+      "validBookHours": "0.1 / 600"
+    },
+    "volatility": {
+      "hours": 1,
+      "p10": null,
+      "p50": null,
+      "p90": null,
+      "spread": null,
+      "met": false
+    }
+  },
+  "records": 268
+}

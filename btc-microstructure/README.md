@@ -90,6 +90,20 @@ taker (10 bp plus the spread and impact measured live from the book), conservati
 resting order is not a fill and aggregate L2 gives no queue position. If the taker
 economics fail, the answer is REJECT, not "but as a maker it would work".
 
+### What the planner already measures
+
+A live capture is in [`research/PLANNER-SAMPLE.txt`](./research/PLANNER-SAMPLE.txt).
+The headline for anyone trading retail size on this instrument: a **$10,000** market
+order costs **5.006 bp** all-in — 5 bp commission, 0.006 bp half-spread, **0.000 bp book
+impact** — and a **$100,000** order costs the same, because the top of book holds more
+than that. Over 99.8% of the cost is commission that no timing decision can change.
+
+That is a useful thing to know and it is also a warning about the execution study: the
+part of execution cost you can actually influence at these sizes is a fraction of a
+basis point. The acceptance threshold for a timing rule (0.5 bp) was set with that
+measurement in hand and written down before the study runs, so "we found a 0.05 bp
+saving and it is significant" cannot later be dressed up as useful.
+
 ### One thing the documentation would have got wrong
 
 `btcusdt@aggTrade` returns nothing on `/ws`, `/stream` or `/public/stream`; it is served
@@ -106,7 +120,7 @@ written from the docs alone would have silently recorded no trades at all.
 npm start              # Execution Planner + collector, http://localhost:8787
 npm run collector      # headless 24/7 capture, no UI
 npm run research:m2    # STATUS-M2.md now; RESULTS-M2.md once the sample gate is met
-npm test               # 89 checks
+npm test               # 91 checks
 npm run probe          # re-verify the live payload shapes
 ```
 

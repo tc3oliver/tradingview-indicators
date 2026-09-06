@@ -1,0 +1,42 @@
+Captured live from a running instance, 2026-09-06 — the terminal equivalent of what
+the browser shows at http://localhost:8787.
+
+BTC EXECUTION PLANNER   BTCUSDT · Binance USDⓈ-M · read-only
+
+BOOK              VALID   (1432 bid / 1304 ask levels)
+SPREAD            0.013 bp
+MID               79730.55     MICROPRICE 79730.59 (0.005 bp from mid)
+LIQUIDITY         DEEP   (spread 0.01 bp · $14,273,975 within 5 bp of mid)
+
+ORDER             BUY $10,000
+  est. VWAP       79730.60      worst fill 79730.60
+  slippage        0.006 bp   (half-spread 0.006 bp + book impact 0.000 bp)
+  taker fee       5.000 bp
+  ALL-IN          5.006 bp   = $5.01
+  depth consumed  1 level(s), 0.0110% of the ask side
+  round trip      10.013 bp at this book
+
+ORDER             BUY $100,000
+  ALL-IN          5.006 bp   (impact 0.000 bp, 1 levels)
+
+MARKET ORDER COST LOW
+EXECUTION QUALITY NOT GRADED
+                  no maximum acceptable cost is configured, so the numbers are shown without a verdict (set M2_MAX_COST_BP to enable one)
+BUY vs SELL       5.006 bp / 5.006 bp
+
+BOOK PRESSURE     MORE RESTING BIDS   [CONTEXT — NOT A DIRECTIONAL SIGNAL]
+  imbalance       top1 0.752  top5 0.747  top10 0.746  weighted 0.073
+  depth ±5bp      bid $6,978,919.77   ask $7,295,054.98
+  flow 5s         signed $-42,735.55  AFI -0.996  (9 trades)
+
+DIRECTIONAL MODEL COLLECTING — INSUFFICIENT
+                  NO VALIDATED DIRECTIONAL SIGNAL
+  prospective     2026-09-06T08:37:34.395Z
+  calendar days   1 / 30
+  weekday/weekend 0 / 20 weekdays  ·  1 / 8 weekend days
+  valid-book hrs  0.1 / 600
+
+DATA INTEGRITY    depth age 62ms · trade age 1233ms
+  gaps 0 · resyncs 1 · reconnects 0 · snapshots 1
+  depth 132 · trades 106 · features 13
+  structural check ok · disk 0.9 MB
