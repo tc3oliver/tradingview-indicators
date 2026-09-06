@@ -23,7 +23,9 @@ history, and **tests you can run locally**.
 | [btc-4h-trade-planner/research](./btc-4h-trade-planner/) | Study TP1: 96 pre-registered trade-rule configurations (bias × entry × stop × trail × direction) against ten acceptance gates. 76 rejected, 20 insufficient, 0 passed — so the planned `strategy()` was not built, and the Trade Risk Planner shipped without signals |
 | [btc-intraday-trade-planner](./btc-intraday-trade-planner/) | Three pre-registered studies, all failed. **IT1**: 36 15m setup candidates (opening-range breakout, sweep & reclaim, VWAP reclaim; London / New York; long / short) + 108 neighbours — 31 rejected, 5 insufficient. **IT2**: replication of Shen, Urquhart & Wang (2022) *Bitcoin intraday time-series momentum* — not replicated on Binance in the paper's own period (t 0.25) or post-publication (t 0.69); gross edge 0.01%/trade vs 0.14% cost. **IT3**: 1H fallback with 2.5-ATR stops (cost only 5–8% of risk) — 6 of 6 rejected. Includes the DSR effective-trial-count correction (849 raw entries → 115 effective) and a DST-correct session seasonality audit |
 
-Those last two entries have no indicator in them, deliberately. Publishing the
+| [btc-microstructure](./btc-microstructure/) | Study M1, a change of data domain: 53.2 million raw Binance aggTrades and the aggressor side of every one of them, testing whether trade flow predicts short-horizon returns before any strategy is designed. Both hypotheses rejected — flow continuation on all seven information gates, absorption on five. What survives is a mild *contrarian* signature worth 0.36 bp against a 140 bp round trip, and the observation that at 5-minute resolution the round trip is larger than the whole average 15-minute move |
+
+Those last three entries have no indicator in them, deliberately. Publishing the
 tests that killed a design is more useful than publishing the design.
 
 ---
