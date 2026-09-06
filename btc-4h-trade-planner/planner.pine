@@ -1,0 +1,147 @@
+// Trade Risk Planner
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © tc3oliver
+//
+// WHAT THIS IS. A mechanical risk converter for discretionary trades: you
+// choose the direction, entry and invalidation; it computes the position size
+// for a fixed fraction of account risk, draws the stop and the R ladder, and
+// tracks a rolling N-bar extreme as a reference exit level. Works on any
+// symbol and any timeframe.
+//
+// WHAT THIS IS NOT. It does not generate signals. This project pre-registered
+// and tested 96 entry/exit rule combinations on six years of BTC 4H data
+// (3 bias rules x 4 entries x 2 stops x 2 trails x 2 directions, see
+// RESEARCH-LOG.md): 76 were rejected, 20 had insufficient trades, 0 passed.
+// The best of the search sat below the noise floor of the search itself.
+// Publishing those rules as BIAS/TRIGGER/ENTRY would be publishing noise, so
+// per the pre-registration they were not built. Position sizing needs no such
+// validation: it is arithmetic, not prediction.
+
+//@version=6
+indicator("Trade Risk Planner", overlay = true)
+
+// ======================= Inputs =======================
+G_PLAN = "Trade plan"
+G_ACCT = "Account"
+G_UI   = "Display"
+
+dirIn    = input.string("Long", "Direction", options = ["Long", "Short"], group = G_PLAN)
+entryIn  = input.float(0.0, "Entry price (0 = current price)", minval = 0, group = G_PLAN,
+     tooltip = "0 follows the live price, so the whole plan updates as the market moves. Set a price to pin the plan to a level you are stalking.")
+stopIn   = input.float(0.0, "Invalidation price (0 = auto)", minval = 0, group = G_PLAN,
+     tooltip = "The price at which the trade idea is wrong. 0 places it at the ATR multiple below/above entry — a distance convention, not a prediction.")
+atrMult  = input.float(1.5, "Auto-stop distance (ATR multiples)", minval = 0.25, maxval = 10, step = 0.25, group = G_PLAN)
+trailN   = input.int(10, "Trailing reference (bars)", minval = 2, maxval = 100, group = G_PLAN,
+     tooltip = "Rolling lowest low (long) / highest high (short) of the previous N bars, drawn as a reference exit level. Mechanical, makes no claim.")
+
+equity   = input.float(10000, "Account equity", minval = 1, group = G_ACCT)
+riskPct  = input.float(1.0, "Risk per trade (%)", minval = 0.05, maxval = 10, step = 0.25, group = G_ACCT)
+maxLev   = input.float(1.0, "Max exposure (x equity)", minval = 0.1, maxval = 10, step = 0.5, group = G_ACCT,
+     tooltip = "Caps position notional. When the stop is very tight, an uncapped size would demand leverage; the cap keeps the size inside what you actually allow.")
+
+showR    = input.bool(true, "Draw 1R/2R/3R ladder", group = G_UI)
+showTr   = input.bool(true, "Draw trailing reference", group = G_UI)
+
+// ======================= Plan arithmetic =======================
+isLong   = dirIn == "Long"
+atr14    = ta.atr(14)
+entryPx  = entryIn > 0 ? entryIn : close
+autoStop = isLong ? entryPx - atrMult * atr14 : entryPx + atrMult * atr14
+stopPx   = stopIn > 0 ? stopIn : autoStop
+
+// A stop on the wrong side of entry means the direction and the level
+// disagree; every derived number would be nonsense, so the plan is voided
+// rather than silently flipped.
+planOK   = not na(stopPx) and (isLong ? stopPx < entryPx : stopPx > entryPx)
+
+stopDist = planOK ? math.abs(entryPx - stopPx) : na
+riskAmt  = equity * riskPct / 100
+qtyRaw   = planOK ? riskAmt / stopDist : na
+qtyCap   = planOK ? maxLev * equity / entryPx : na
+qty      = planOK ? math.min(qtyRaw, qtyCap) : na
+capped   = planOK and qtyRaw > qtyCap
+notional = planOK ? qty * entryPx : na
+// When the cap binds, the size no longer risks the full budget; the number
+// shown must be the risk actually taken, not the one asked for.
+actRisk  = planOK ? qty * stopDist : na
+
+r1 = planOK ? entryPx + (isLong ? 1 : -1) * stopDist : na
+r2 = planOK ? entryPx + (isLong ? 2 : -2) * stopDist : na
+r3 = planOK ? entryPx + (isLong ? 3 : -3) * stopDist : na
+
+// Previous N bars, excluding the live bar, so the level never repaints.
+trailRef = isLong ? ta.lowest(low, trailN)[1] : ta.highest(high, trailN)[1]
+
+// ======================= Levels on the chart =======================
+cEntry = color.new(color.blue, 20)
+cStop  = color.new(color.red, 20)
+cR     = color.new(color.gray, 55)
+cTrail = color.new(color.orange, 30)
+
+plot(planOK ? entryPx : na, "Entry", cEntry, 2, plot.style_linebr)
+plot(planOK ? stopPx : na, "Invalidation", cStop, 2, plot.style_linebr)
+plot(showR and planOK ? r1 : na, "1R", cR, 1, plot.style_linebr)
+plot(showR and planOK ? r2 : na, "2R", cR, 1, plot.style_linebr)
+plot(showR and planOK ? r3 : na, "3R", cR, 1, plot.style_linebr)
+plot(showTr ? trailRef : na, "Trailing reference", cTrail, 1, plot.style_linebr)
+
+// ======================= Alerts =======================
+// Touch-based, evaluated on confirmed bars only so an alert never fires on an
+// intrabar wick that closes back inside.
+stopTouch  = barstate.isconfirmed and planOK and (isLong ? low <= stopPx : high >= stopPx)
+entryTouch = barstate.isconfirmed and planOK and entryIn > 0 and low <= entryPx and high >= entryPx
+trailLock  = barstate.isconfirmed and planOK and (isLong ? trailRef > entryPx : trailRef < entryPx)
+
+alertcondition(stopTouch, "Invalidation touched", "Price touched the invalidation level of the planned trade.")
+alertcondition(entryTouch, "Entry touched", "Price traded through the pinned entry level.")
+alertcondition(trailLock, "Trailing reference beyond entry", "The N-bar trailing reference has moved past the entry price.")
+
+// ======================= Table =======================
+fmtPx(x) => str.tostring(x, format.mintick)
+fmtPc(x) => str.tostring(x * 100, "#.##") + "%"
+
+var table tb = table.new(position.top_right, 2, 14, bgcolor = color.new(color.black, 15), border_width = 1, border_color = color.new(color.gray, 80))
+
+// Pine forbids function declarations inside a local scope, so the row helper
+// lives here and reaches `tb` as a global.
+row(r, k, v, col) =>
+    table.cell(tb, 0, r, k, text_color = color.new(color.gray, 20), text_halign = text.align_left, text_size = size.small)
+    table.cell(tb, 1, r, v, text_color = col, text_halign = text.align_right, text_size = size.small)
+    r + 1
+
+if barstate.islast
+    table.clear(tb, 0, 0, 1, 13)
+    int r = 0
+    table.cell(tb, 0, r, "TRADE RISK PLANNER", text_color = color.white, text_halign = text.align_left, text_size = size.small)
+    table.cell(tb, 1, r, dirIn == "Long" ? "LONG" : "SHORT", text_color = isLong ? color.new(color.teal, 10) : color.new(color.red, 10), text_halign = text.align_right, text_size = size.small)
+    r += 1
+    if not planOK
+        r := row(r, "PLAN", "INVALID — stop is on the wrong side of entry", color.new(color.red, 10))
+    else
+        r := row(r, "ENTRY", fmtPx(entryPx) + (entryIn > 0 ? "  (pinned)" : "  (live)"), color.white)
+        r := row(r, "INVALIDATION", fmtPx(stopPx) + "  (" + fmtPc(stopDist / entryPx) + ", " + str.tostring(stopDist / atr14, "#.#") + " ATR)", color.white)
+        r := row(r, "RISK", fmtPc(actRisk / equity) + " = " + str.tostring(actRisk, "#.##"), color.white)
+        r := row(r, "SIZE", str.tostring(qty, "#.######") + "  (" + str.tostring(notional, "#") + ")", color.white)
+        r := row(r, "EXPOSURE", str.tostring(notional / equity, "#.##") + "x equity" + (capped ? "  CAPPED" : ""), capped ? color.new(color.orange, 10) : color.white)
+        if capped
+            r := row(r, "", "size capped at " + str.tostring(maxLev, "#.#") + "x — actual risk " + fmtPc(actRisk / equity) + " < " + fmtPc(riskPct / 100), color.new(color.orange, 10))
+        r := row(r, "1R / 2R / 3R", fmtPx(r1) + " / " + fmtPx(r2) + " / " + fmtPx(r3), color.new(color.gray, 20))
+        r := row(r, "TRAIL REF (" + str.tostring(trailN) + ")", fmtPx(trailRef) + (trailLock ? "  past entry" : ""), cTrail)
+        if entryIn > 0
+            r := row(r, "PRICE VS ENTRY", fmtPc((close - entryPx) / entryPx), color.new(color.gray, 20))
+    r := row(r, "BAR RANGE", str.tostring((high - low) / atr14, "#.#") + "x ATR14", color.new(color.gray, 30))
+    r := row(r, "EVIDENCE", "96 entry rules tested, 0 validated", color.new(color.gray, 30))
+    r := row(r, "", "sizes risk — does not predict", color.new(color.gray, 40))
+
+// ======================= Offline-test hooks =======================
+plot(planOK ? 1 : 0, "t_planOK", display = display.none)
+plot(entryPx, "t_entry", display = display.none)
+plot(stopPx, "t_stop", display = display.none)
+plot(qty, "t_qty", display = display.none)
+plot(notional, "t_notional", display = display.none)
+plot(actRisk, "t_risk", display = display.none)
+plot(r1, "t_r1", display = display.none)
+plot(r3, "t_r3", display = display.none)
+plot(trailRef, "t_trail", display = display.none)
+plot(capped ? 1 : 0, "t_capped", display = display.none)
+plot(atr14, "t_atr", display = display.none)

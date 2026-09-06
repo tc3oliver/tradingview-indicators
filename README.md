@@ -13,12 +13,14 @@ history, and **tests you can run locally**.
 |---|---|---|
 | [session-highs-and-lows-indicator](./session-highs-and-lows-indicator/) | Marks the high and low of each SMC/ICT killzone with labels and extended dashed lines | v3.1 |
 | [btc-4h-market-intelligence](./btc-4h-market-intelligence/) | **BTC 4H Market Radar** — monitors OI, funding, perp premium, spot-vs-perp participation, liquidations, ETF flow and SOPR. Default **Decision** view answers four questions in ten to fourteen rows of plain English: what state the market is in, whether volatility is higher than usual, the one thing worth looking at, and whether the data is healthy. Detailed and Debug modes expose every number behind it. Direction from raw values, abnormality from percentiles. No score, no signal, no action, no position size | v3.3 |
+| [btc-4h-trade-planner](./btc-4h-trade-planner/) | **Trade Risk Planner** — mechanical risk converter for discretionary trades on any symbol and timeframe: you pick direction, entry and invalidation; it computes position size for a fixed account risk, draws the stop and R ladder, and tracks a non-repainting trailing reference. Generates no signals, because the same directory's pre-registered study of 96 entry/exit rules validated none of them | v1.0 |
 
 ## Research
 
 | Directory | What it is |
 |---|---|
 | [btc-4h-regime-engine](./btc-4h-regime-engine/) | The falsification record behind the indicator above. Five pre-registered hypotheses on 13,164 bars of 4H BTC, all failed, with a trial registry and a Deflated Sharpe Ratio computed from the actual search |
+| [btc-4h-trade-planner/research](./btc-4h-trade-planner/) | Study TP1: 96 pre-registered trade-rule configurations (bias × entry × stop × trail × direction) against ten acceptance gates. 76 rejected, 20 insufficient, 0 passed — so the planned `strategy()` was not built, and the Trade Risk Planner shipped without signals |
 
 That second entry has no indicator in it, deliberately. Publishing the tests that
 killed a design is more useful than publishing the design.
