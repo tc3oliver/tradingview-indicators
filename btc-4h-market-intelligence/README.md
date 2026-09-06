@@ -643,7 +643,7 @@ node audit/event-log.mjs             # prospective log, from the freeze forward
 
 | # | Check | What it proves |
 |---|---|---|
-| 0 | runs | transpiles and executes against genuine multi-symbol data |
+| 0 | runs + **branch-type lint** | transpiles and executes against genuine multi-symbol data, and no `if`/`else` pair mixes a void branch with a value-returning one — a mismatch Pine refuses to compile and PineTS accepts silently |
 | 1 | **semantic invariants** | every direction word follows the raw value — 0 violations across OI 24H, OI 4H, premium, funding, ETF and liquidation balance |
 | 2 | trend / SOPR signs | the state sign equals the raw deviation's sign on every engaged bar |
 | 3 | participation naming | RELATIVE SURGE follows its own z; `SPOT DOMINANT`/`PERP DOMINANT` are gone from the source |
@@ -734,6 +734,13 @@ threshold version) before it declined to write.
 
 ## 13. Limitations
 
+- **PineTS does no type checking at all.** Pine's compiler rejects an `if`/`else`
+  whose branches have incompatible types (CE10235); PineTS runs it happily. That
+  cost one round-trip through the Pine Editor: `array.shift()` *returns* the
+  element it removed, so a branch ending on it typed as `series int` while its
+  sibling was `void`. Check 0 now lints for the pattern across both `.pine`
+  files, but a lint is not a compiler — **A1 remains the only real proof the
+  script compiles.**
 - **PineTS is not TradingView.** Two rewrites are applied for the offline run
   only: PineTS re-runs the whole script inside `request.security()` (TradingView
   evaluates just the expression), and its `na()` cannot handle an `na` array.

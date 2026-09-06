@@ -177,7 +177,50 @@ try {
   console.log((e.stack ?? '').split('\n').slice(0, 6).join('\n'));
   process.exit(1);
 }
-line(0, true, 'main.pine transpiles and runs against multi-symbol local data');
+// PINE BRANCH-TYPE LINT. PineTS performs no type checking whatsoever, so a
+// mismatch Pine refuses to compile (CE10235: "Return type of one of the if or
+// switch blocks is not compatible with return type of other block(s)") runs
+// happily here. It cost a round-trip through the Pine Editor once: array.shift()
+// RETURNS the element it removed, so a branch ending on it typed as series int
+// while its sibling branch was void.
+{
+  const VOID = /^(array\.(set|push|unshift|clear|fill|insert|sort|reverse|splice)|table\.(cell|merge_cells|delete|set_\w+)|label\.(delete|set_\w+)|line\.delete|alert|runtime\.error|log\.\w+)\(/;
+  const VALUE = /^(array\.(shift|pop|remove|get|size|max|min|avg|sum|indexof|slice|copy|join)|table\.new|label\.new|line\.new|str\.\w+|math\.\w+)\(/;
+  const classify = (t) => (VOID.test(t) ? 'void' : VALUE.test(t) ? 'value' : /:=/.test(t) ? 'assign' : 'other');
+  const lint = (file, text) => {
+    const L = text.split('\n');
+    const ind = (x) => x.length - x.trimStart().length;
+    const bad = [];
+    for (let i = 0; i < L.length; i++) {
+      if (L[i].trim() !== 'else') continue;
+      const d = ind(L[i]);
+      let a2 = null;
+      for (let j = i - 1; j >= 0; j--) {
+        const t = L[j].trim();
+        if (!t || t.startsWith('//')) continue;
+        if (ind(L[j]) > d) { a2 = t; break; }
+        break;
+      }
+      let b2 = null;
+      for (let k = i + 1; k < L.length; k++) {
+        const t = L[k].trim();
+        if (!t || t.startsWith('//')) continue;
+        if (ind(L[k]) > d) b2 = t; else break;
+      }
+      if (!a2 || !b2) continue;
+      const ca = classify(a2), cb = classify(b2);
+      if (ca !== cb && [ca, cb].every((c) => c === 'void' || c === 'value')) {
+        bad.push(`${file}:${i + 1} if-branch ends ${ca} (${a2.slice(0, 40)}) but else-branch ends ${cb} (${b2.slice(0, 40)})`);
+      }
+    }
+    return bad;
+  };
+  const fp = readFileSync(new URL('./footprint-live.pine', import.meta.url), 'utf8');
+  const bad = [...lint('main.pine', RAW), ...lint('footprint-live.pine', fp)];
+  bad.forEach((x) => fails.push('BRANCH TYPE: ' + x));
+  line(0, check(bad.length === 0, `${bad.length} if/else branch-type mismatches`),
+    `main.pine transpiles, runs against multi-symbol local data, and passes the Pine branch-type lint (${bad.length} mismatches across both .pine files)`);
+}
 
 // Harness guard: if spot and the reference ever resolve to the same series,
 // every cross-symbol result below is vacuous.

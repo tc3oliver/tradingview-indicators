@@ -944,16 +944,20 @@ EV_MAX = 5
 
 pushEvent(txt) =>
     dup = array.get(evLast, 0) == txt
-    if dup
-        array.set(evStat, 1, array.get(evStat, 1) + 1)
-    else
+    if not dup
         array.push(evTxt, txt)
         array.push(evT, time)
-        array.set(evLast, 0, txt)
-        array.set(evStat, 0, array.get(evStat, 0) + 1)
         if array.size(evTxt) > EV_MAX
             array.shift(evTxt)
             array.shift(evT)
+        array.set(evLast, 0, txt)
+    // Both counters on one line at the end, and every block above finishes on a
+    // void array.set(). array.shift() RETURNS the element it removed, so ending
+    // a branch on it gave that branch a `series int` type while the sibling
+    // branch was void — Pine cannot unify those and refuses to compile
+    // (CE10235). PineTS does no type checking at all, so the offline suite ran
+    // this happily for three versions.
+    array.set(evStat, dup ? 1 : 0, array.get(evStat, dup ? 1 : 0) + 1)
 
 // alert() is silent unless the user created an alert on the script, so firing
 // and recording together costs nothing and keeps the two lists identical.

@@ -39,6 +39,11 @@ prospective cohort.
   Their disagreement is measured rather than assumed: **21.3%** of 78,579
   readings, and the case that reads like a bug (`95.0p … NORMAL [σ]`) is
   **1.46%**, concentrated in the fat-tailed measures.
+- **A branch-type mismatch Pine refuses to compile.** `array.shift()` returns
+  the element it removed, so one branch of `pushEvent()` typed as `series int`
+  while its sibling was `void` (CE10235). PineTS does no type checking, so the
+  offline suite had run it since v3. Output after the fix is bit-identical.
+  Check 0 now lints both `.pine` files for the pattern.
 - **A one-line wrapper that silently zeroed every z-score.** History indexing on
   a series parameter does not survive a nested user-function call — `src[i]`
   collapsed to `src[0]`, every window sample became identical, σ went to zero.

@@ -106,7 +106,20 @@ The case that reads like a bug — `95.0p ... NORMAL [σ]` — is 1.46% of readi
 concentrated in the fat-tailed measures. No forward return was used and no
 threshold was changed on the strength of this.
 
-### 0.0.4 A one-line wrapper that silently zeroed every z-score
+### 0.0.4 A branch-type mismatch Pine refuses to compile
+
+`array.shift()` returns the element it removed, so the else-branch of
+`pushEvent()` typed as `series int` while the if-branch was `void`. Pine rejects
+that pair (CE10235); PineTS does no type checking and had run it since v3.
+Found by pasting into the Pine Editor, which is the only place it could be
+found. Restructured so every block finishes on a void `array.set()`; output is
+bit-identical (same 770 pushes, 2 suppressions, 3,992 engaged OI 24H bars).
+
+Check 0 now lints both .pine files for the pattern and was verified by
+reintroducing the defect, which it caught at the exact line. A lint is not a
+compiler: A1 stays the only real proof the script compiles.
+
+### 0.0.5 A one-line wrapper that silently zeroed every z-score
 
 `validNorm(src, len, minN) => validNormAt(src, src, len, minN)` looked tidy and
 was broken: history indexing on a series parameter does not survive a nested
