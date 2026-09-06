@@ -205,7 +205,7 @@ no target — earns, on validation ∪ test over 108,710 signals:
 | gross per signal, following the flow | **−0.362 bp** (HAC t −5.74) |
 | gross per signal, fading the flow | **+0.362 bp** |
 | mean absolute 15m move on those bars | 12.8 bp |
-| round trip cost, base | 140 bp |
+| round trip cost, base (0.14%) | 14 bp |
 | **COST / EXPECTED EDGE** | **38.7×** at 0.14%, 55.2× at 0.20%, 82.8× at 0.30% |
 | **COST / EXPECTED MOVE** | **1.09** at 0.14% |
 
@@ -231,7 +231,7 @@ This is the same wall IT1 hit (cost 0.1–0.5 R on tight stops) and IT2 hit (cos
   hypothesis passed, so §8's minimal implementation was never eligible to run.
 - **The reversal finding is recorded, not pursued.** It would need its own
   pre-registration, and §5 shows what that study would conclude before it started:
-  a 0.36 bp edge against a 140 bp round trip.
+  a 0.36 bp edge against a 14 bp round trip.
 - **Prospective capture has started**, per §5 of the pre-registration.
   `data/prospective.mjs` appends closed 5m bars after the cutoff into a separate file
   and stamps every append with wall-clock time. First append 2026-09-06T07:50Z, 94
@@ -243,7 +243,7 @@ This is the same wall IT1 hit (cost 0.1–0.5 R on tight stops) and IT2 hit (cos
   was known: prospective order-book microstructure. M1's result sharpens what M2 has
   to clear rather than changing what M2 is. If aggregate signed flow is worth 0.4 bp
   over 15 minutes, then depth imbalance, microprice and queue dynamics have to be
-  worth more than **1.4 bp per round trip** to matter at all — and the only honest
+  worth more than **14 bp per round trip** to matter at all — and the only honest
   place to find that is at a horizon and a fee tier where the toll is not larger than
   the move. M2's pre-registration must state its target horizon and its assumed fee
   tier *first*, and reject itself if the arithmetic in §5 above cannot be beaten.

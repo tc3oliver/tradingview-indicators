@@ -3,6 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node research/smoke.mjs"
+    "start": "node execution-planner/server.mjs",
+    "planner": "node execution-planner/server.mjs",
+    "collector": "node collector/run.mjs",
+    "research:m2": "node --max-old-space-size=8192 research/m2.mjs",
+    "freeze": "node collector/freeze.mjs",
+    "probe": "node research/probe/probe.mjs",
+    "test": "node --max-old-space-size=8192 tests/run.mjs",
+    "test:m1": "node --max-old-space-size=8192 research/smoke.mjs"
   }
 }

@@ -1,86 +1,125 @@
-# BTC raw trade microstructure — Study M1
+# BTC Order Book / Execution Intelligence
 
-A pre-registered test of one question: **does aggressive buy/sell trade flow predict
-short-horizon BTC returns?** No strategy was designed until that had an answer, and it
-does not have a usable one. **M1 was REJECTED and nothing was built.**
+Two things live here, and they are deliberately separate.
 
-This is a change of data domain, not another parameter search. The four studies before
-it ([TP1](../btc-4h-trade-planner/), [IT1, IT2,
-IT3](../btc-intraday-trade-planner/)) rejected every directional rule they tested on
-OHLCV bars. M1 goes to the trade tape instead: 53.2 million raw Binance aggTrades, the
-aggressor side of every one of them, and 702,720 five-minute bars of signed flow.
+**A. Execution Planner — finished, and useful today.** You have already decided to buy
+or sell BTC. This tells you what it costs to execute *right now*: spread, walk-the-book
+VWAP, slippage, fee, all-in cost in bp and dollars, and how deep the book is. It needs
+no directional edge and makes no directional claim.
+
+```bash
+cd btc-microstructure && npm start     # then open http://localhost:8787
+```
+
+No dependencies, no API key, read-only public market data, no orders ever placed.
+
+**B. Directional research (Study M2) — pre-registered, collecting.** Whether the order
+book predicts the next 30 seconds. It may print LONG or SHORT only after passing every
+gate in [`research/PRE-REGISTRATION-M2.md`](./research/PRE-REGISTRATION-M2.md), the
+economic one included. Right now the honest status is **COLLECTING**, and the planner
+shows **NO VALIDATED DIRECTIONAL SIGNAL**.
+
+Also here: **Study M1**, a completed and rejected study of raw aggressive trade flow.
+
+---
+
+## Study M1 — raw trade microstructure (completed, REJECTED)
+
+A pre-registered test of one question: does aggressive buy/sell trade flow predict
+short-horizon BTC returns? 53.2 million raw Binance aggTrades, 702,720 five-minute bars.
 
 | | |
 |---|---|
 | **H1** — higher aggressor flow imbalance predicts a higher next-15m return | **REJECTED**, all seven information gates. β = +1.7e-5, t = 0.46 on validation ∪ test |
 | **H2** — flow that fails to move price carries different information (absorption) | **REJECTED**, five of seven gates. Absorbed and aligned flow are 0.03 bp apart |
 | **the finding that survives** | flow is mildly *contrarian*: heaviest aggressive selling is followed by +0.45 bp over 15 minutes, heaviest buying by −0.27 bp, monotone across deciles and present in all three splits |
-| **why it is still nothing** | that edge is **0.36 bp** against a **140 bp** round trip — COST / EXPECTED EDGE = **38.7×**. At 5-minute resolution the round trip is larger than the entire average 15-minute move (ratio 1.09) |
+| **why it is still nothing** | that edge is **0.36 bp** against a **14 bp** round trip — COST / EXPECTED EDGE = **38.7×**. At 5-minute resolution the round trip is larger than the entire average 15-minute move (ratio 1.09) |
 
 Read in order: [`PRE-REGISTRATION-M1.md`](./PRE-REGISTRATION-M1.md) →
 [`research/AUDIT-M1.md`](./research/AUDIT-M1.md) →
 [`RESEARCH-LOG-M1.md`](./RESEARCH-LOG-M1.md) →
 [`research/RESULTS-M1.md`](./research/RESULTS-M1.md).
 
-## The data question, and the honest answer to it
+Seven years of futures aggTrades is about 80 GB, so M1's full-sample features come from
+the 5m klines' taker-buy split. That deviation is licensed by measurement, not
+convenience: across 9,788 bars rebuilt from 53.2 million raw trades the median relative
+error is **4e-16**, while the same comparison with the maker side flipped has median
+error **0.15** — so `is_buyer_maker = false → aggressive buy` is verified against its own
+negation. The audit also found the two places where the *raw archive* is the worse
+source: it starts a few hundred milliseconds into each UTC day, and it is missing 557,026
+aggTrade ids at 2021-05-19 13:15 UTC.
 
-Seven years of BTCUSDT futures aggTrades is about 80 GB, so the full-sample features
-come from the 5m klines' taker-buy split rather than from the raw tape. That is a
-deviation from the specification and it is treated as one. It is licensed by
-measurement: across 9,788 bars rebuilt from 53.2 million raw trades, the median
-relative error between the raw aggregation and the kline split is **4e-16**, while the
-same comparison with the maker side flipped has median error **0.15** — so
-`is_buyer_maker = false → aggressive buy` is verified against its own negation rather
-than assumed.
+---
 
-The audit also found the two places where the *raw archive* is the worse source: it
-begins a few hundred milliseconds into each UTC day, and it is missing 557,026
-aggTrade ids at 2021-05-19 13:15 UTC, holding $11.5M where the exchange recorded
-$141.8M over 211,056 trades.
+## Study M2 — order book (pre-registered, collecting)
 
-The licence covers aggregate signed notional per 5m bar and nothing more. Trade size
-distribution, individual sweep size and sub-5-minute timing still require the raw tape.
+M1 answered its question at 5-minute resolution and the answer was "information yes,
+tradability no". M2 goes to the book itself, at 1-second resolution, and puts the
+execution question first — because five studies in a row have now found that
+short-horizon edges are smaller than the toll.
 
-## Reproduce
+**What is built and running:**
 
-```
-node data/fetch-klines.mjs --market perp --interval 5m   # 702,720 bars, 0 grid gaps
-node data/fetch-klines.mjs --market spot --interval 5m
-node data/fetch-aggtrades.mjs --market perp              # 34 stratified days, ~850 MB streamed
-node data/fetch-aggtrades.mjs --market spot
-node data/reconcile-1m.mjs --market perp                 # 1m OHLC rebuilt from raw trades
-node research/audit.mjs                                  # -> research/AUDIT-M1.md
-npm test                                                 # estimator and feature invariants
-node --max-old-space-size=8192 research/m1.mjs           # -> research/RESULTS-M1.md, trials.json
-node data/prospective.mjs                                # append post-cutoff bars (safe to re-run)
-```
-
-Archives are streamed through `funzip` and never stored; `data/cache/` is not
-committed.
-
-## Files
-
-| file | what it is |
+| piece | state |
 |---|---|
-| `PRE-REGISTRATION-M1.md` | frozen before the first estimate (`1350c08`): hypotheses, splits, seven information gates, cost gate, minimal implementation, trial budget, and the M2 fallback |
-| `RESEARCH-LOG-M1.md` | verdict and reading |
-| `research/AUDIT-M1.md` | data integrity: duplicates, id continuity, archive boundaries, 1m price reconciliation, aggressor-side verification, schema differences |
-| `research/features.mjs` | AFI and the controls; sha256 recorded in the pre-registration |
-| `research/stats.mjs` | Newey–West OLS, within transformation, rank IC, deciles; sha256 recorded |
-| `research/m1.mjs` | H1 and H2, gates, trial registry |
-| `research/smoke.mjs` | estimator checks on data with a known answer, plus feature invariants (`npm test`) |
-| `data/prospective.mjs` | post-cutoff capture, with an append log so backfill cannot pass as prospective |
-| `trials.json` | 36 entries, 12 configurations, 6 effective — written before any gate was evaluated |
+| production collector — two websockets, validated local book, append-safe partitioned log | **working** |
+| data integrity monitor — book validity, feed ages, sequence gaps, resyncs, disk | **working** |
+| Execution Planner UI | **working** |
+| research runner with the sample gate wired in | **working**, refuses to analyse below the gate |
+| directional verdict | **COLLECTING** — needs 30 calendar days of prospective data |
 
-## What happens next
+**What is not built, and why:** no directional signal, because the pre-registered
+minimum sample (30 calendar days, 20 weekdays, 8 weekend days, 600 valid-book hours,
+and a p90/p10 spread of hourly realised volatility of at least 2.0) has not been
+reached. Recent short-capture crypto order-flow work reverses sign on sample extension;
+a few days of book data will produce a confident coefficient of either sign. The runner
+refuses to compute one. Current progress is on the planner's status panel and in
+[`research/STATUS-M2.md`](./research/STATUS-M2.md).
 
-Nothing, in this directory. The pre-registration fixed the next direction before M1's
-outcome was known: **M2, prospective order-book microstructure** — depth imbalance,
-microprice, spread, liquidity withdrawal, queue pressure. M1 does not change what M2
-is, but it does set the bar M2 has to clear. If aggregate signed flow is worth 0.4 bp
-over fifteen minutes, book-derived features have to be worth more than 1.4 bp per
-round trip to matter at all, and M2's pre-registration has to state its horizon and
-fee tier first and reject itself if that arithmetic cannot be beaten.
+Read: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · [`RUNBOOK.md`](./RUNBOOK.md) ·
+[`data/SCHEMA.md`](./data/SCHEMA.md) ·
+[`research/LITERATURE-M2.md`](./research/LITERATURE-M2.md) ·
+[`research/PRE-REGISTRATION-M2.md`](./research/PRE-REGISTRATION-M2.md).
 
-No Pine `strategy()` is promised, then or now. TradingView cannot serve this data, and
-an approximation would be a new hypothesis inheriting none of the evidence here.
+### The cost model, stated plainly
+
+0.14% is **14 bp**. Binance USDⓈ-M, Regular User / VIP 0, read 2026-09-06: taker
+**5 bp per side**, maker **2 bp per side**. Three acceptance profiles — commission-only
+taker (10 bp plus the spread and impact measured live from the book), conservative taker
+(14 bp), stress (20 bp) — and a maker profile that **may never pass a gate**, because a
+resting order is not a fill and aggregate L2 gives no queue position. If the taker
+economics fail, the answer is REJECT, not "but as a maker it would work".
+
+### One thing the documentation would have got wrong
+
+`btcusdt@aggTrade` returns nothing on `/ws`, `/stream` or `/public/stream`; it is served
+only on `/market`, while depth is the other way round. Measured against the live
+exchange before a line of parser was written
+([`research/probe/payloads.json`](./research/probe/)). A single-connection collector
+written from the docs alone would have silently recorded no trades at all.
+
+---
+
+## Commands
+
+```bash
+npm start              # Execution Planner + collector, http://localhost:8787
+npm run collector      # headless 24/7 capture, no UI
+npm run research:m2    # STATUS-M2.md now; RESULTS-M2.md once the sample gate is met
+npm test               # 89 checks
+npm run probe          # re-verify the live payload shapes
+```
+
+M1 is reproducible separately — see the commands in
+[`RESEARCH-LOG-M1.md`](./RESEARCH-LOG-M1.md) and `data/fetch-*.mjs`.
+
+## Layout
+
+| path | what |
+|---|---|
+| `collector/` | config and fees, order book, websockets, storage, freeze marker |
+| `features/` | book and flow measurements, walk-the-book execution estimate |
+| `execution-planner/` | local read-only server and UI |
+| `research/` | M1 (done) and M2 (pre-registered) studies, literature audit, live payload probe |
+| `tests/` | book, execution, storage, prospective boundary, research pipeline, UI |
+| `data/` | schema, manifest, partitioned event log (not committed) |

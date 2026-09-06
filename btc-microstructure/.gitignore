@@ -1,3 +1,8 @@
 data/cache/
+data/l2/
+data/MANIFEST.json
+data/PROSPECTIVE.json
+data/collector-state.json
 node_modules/
 *.log
+research/probe/*.err
