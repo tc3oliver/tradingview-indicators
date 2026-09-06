@@ -1549,7 +1549,9 @@ reqLev  = planOK ? qtyRaw * entryPx / equity : na
 // price. The 1R/2R/3R ladder, live R, distance to stop, distance to target and
 // cost load are all that same unit, so two numbers on the panel can always be
 // compared. It is the definition the ladder has always used and the one that
-// makes LIVE +0.63R and TO STOP 1.63R sum to exactly 1.
+// makes TO STOP exactly one R further from price than LIVE is: at LIVE +0.63R the
+// stop is 1.63R away, and the difference is 1.00R on every bar, whatever price
+// does. Two numbers on the panel can be subtracted because they are the same unit.
 //
 // A consequence worth stating rather than hiding: with costs in the sizing, the
 // money you lose at the stop is MORE than one R, because it includes the round

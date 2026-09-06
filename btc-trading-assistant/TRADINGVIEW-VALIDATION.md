@@ -96,9 +96,10 @@ The plan refuses rather than produce a confident number it cannot justify.
 
 ### Plan alerts
 
-Observed through fired/suppressed counters rather than the runtime's alert
-plumbing, because what needs proving is the duplicate guard and a counter is a
-direct measurement of it.
+Two independent observations. The duplicate guard is measured through
+fired/suppressed counters, because a counter is a direct measurement of it. The
+message text is read back out of the alerts the run actually emitted, so it is
+verified as delivered rather than as spelled in the source.
 
 | | |
 |---|---|
@@ -107,7 +108,9 @@ direct measurement of it.
 | Re-touch suppressed | every later touch of the same unmoved level is counted as suppressed |
 | Stage-appropriate | ACTIVE fires on stop or target touches, not on entry |
 | R ladder is opt-in | enabling 1R/2R/3R can only add alerts, never remove one |
-| Message content | every message carries the product name, the stage and the direction; `Entry touched at`, `Stop touched at`, `Target touched at` and `1R touched at` all exist |
+| Messages are **delivered**, not merely spelled | the offline runtime's default `alertMode: "realtime"` silently drops every alert except on the last bar, which is why an earlier suite could only assert that a string existed somewhere in `main.pine`. `run()` now overrides that mode and reads the emitted messages back out of `ctx.alerts`, so what is asserted is what a user would actually receive |
+| ...and their construction is exact | the delivered PLANNING message matches `^BTC Trading Assistant · PLANNING · LONG · Entry touched at [\d,.]+$` in full — product, stage, direction, level type and price. Exit alerts are asserted to name which level was touched (Stop / Target / 1R / 2R / 3R) |
+| Stage cannot be misread | ACTIVE messages contain `ACTIVE ·`; ACTIVE never delivers an entry alert for a position already taken, and PLANNING never delivers a stop alert for a trade not yet entered. Both asserted against delivered output, not against source text |
 | Confirmed bars only | touches are gated on `barstate.isconfirmed`, so an intrabar wick that closes back inside does not fire |
 | v1.0 context alerts | unchanged (`alert.freq_once_per_bar_close`) |
 
@@ -212,7 +215,7 @@ chart. **None has been performed.**
 | 14 | **Light theme and dark theme are both legible**, and the `chart.bg_color` luma branch picks the right palette on each | `chart.bg_color` is stubbed offline, so only one side of the `isDark` branch is ever taken. Contrast is a visual judgement no assertion can make. |
 | 15 | **Panel size Compact / Normal / Large** all render without truncation or overflow | Row *count* is asserted identical across sizes; text size, column widths and visual height are not modelled. |
 | 16 | **Planning view and Active view both render**, and the Active block appears only in Active | Cell text is inspected offline; layout, alignment and truncation are not. |
-| 17 | **Plan alerts actually deliver** via "Any alert() function call", with the right message text, once per level | `alert()` delivery is not modelled. The suite counts fires and suppressions internally; whether TradingView's alert system receives them is untested. |
+| 17 | **Plan alerts reach the user** — create the alert with "Any alert() function call" and confirm it arrives | The *message text* is now asserted against delivered output (see Plan alerts above), so what remains is the plumbing either side of it: that the alert dialog offers the option, that TradingView's alert engine picks up the `alert()` call at all, and that it survives the chart being closed. None of that is modelled offline. |
 | 18 | **`syminfo.mincontract`, `syminfo.pointvalue` and `syminfo.mintick` return real values** | All three are `na` in the offline runtime. The minimum-order warning, the non-linear-instrument refusal and the tick rounding are therefore structurally tested against *substituted* values and never exercised on real data. Confirm on a real linear perp that the point value is 1, the tick is real, and no false refusal or false warning appears. |
 | 19 | **`chart.is_standard` on a real Heikin Ashi / Renko chart** | Always `true` offline; the guard is tested by substitution only. |
 | 20 | **Drawing object counts stay within `max_lines_count = 20` / `max_boxes_count = 5`** over a long chart | The `var`-handle lifecycle is proven structurally, but Pine's actual object accounting — and what happens across a chart reload or a settings change — is not modelled. |

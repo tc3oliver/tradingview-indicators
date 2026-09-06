@@ -34,6 +34,11 @@ What ships is what survived: descriptive market context, and arithmetic.
 
 ## The studies
 
+Ten rows, eight studies. Rows 2 and 3 are audits of modules built on top of study
+1 rather than separate searches for a directional edge, and row 10 is still
+collecting. "Eight pre-registered studies" above counts the searches; the table
+counts the records.
+
 | # | Study | Question | Verdict | Record |
 |---|---|---|---|---|
 | 1 | Regime engine (H1–H4, P1) | Do OI, positioning and derivatives state predict 4H direction? | **Rejected** — all hypotheses failed under exposure-matched controls | [market-regime.md](./rejected-studies/market-regime.md) |

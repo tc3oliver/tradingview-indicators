@@ -738,7 +738,8 @@ export async function plannerChecks() {
   check(grossR > netR, `costs make the target worth less than its gross R (${grossR.toFixed(2)} gross, ${netR.toFixed(2)} net) — the panel does not pretend otherwise`);
   check(Math.abs(grossR - 2.5) < 1e-9, 'a 65,000 target on a 2,000 stop is exactly 2.5R gross');
 
-  // ONE DEFINITION OF R. Live R and distance-to-stop must sum to exactly 1,
+  // ONE DEFINITION OF R. Distance-to-stop must sit exactly one R beyond live R —
+  // the DIFFERENCE is 1.00 on every bar, not the sum —
   // which is only true if both use the same unit.
   const liveCtx = await run(sample, { source: plan({ entry: 60000, stop: 58000, eq: 25000, risk: 2, stage: 'Active' }) });
   const lr = ser(liveCtx, 't_liveR'), ts = ser(liveCtx, 't_toStopR');
@@ -809,12 +810,25 @@ export async function alertChecks() {
   check(ser(withR, 't_alFire').at(-1) >= ser(act, 't_alFire').at(-1),
     `opting into 1R/2R/3R can only add alerts (${ser(act, 't_alFire').at(-1)} → ${ser(withR, 't_alFire').at(-1)})`);
 
-  // Messages must identify the product, the stage, the direction and the level.
-  check(/AL_HEAD = "BTC Trading Assistant · "/.test(RAW), 'every plan alert names the product');
-  check(/alHead  = AL_HEAD \+ stgTxt \+ " · " \+ dirTxt/.test(RAW), '...and carries the stage and the direction');
-  for (const m of ['Entry touched at', 'Stop touched at', 'Target touched at', '1R touched at']) {
-    check(RAW.includes(m), `alert message "${m}" exists`);
-  }
+  // MESSAGES, AS DELIVERED — not as spelled in the source.
+  // The offline runtime drops every alert except on the last bar unless the
+  // alert mode is overridden, which is why a suite can assert "the string exists
+  // in main.pine" and prove nothing about what a user would actually receive.
+  // These read the emitted messages instead.
+  const cap = await run(sample, { source: plan({ ...base, alerts: true }), alertMode: 'historical' });
+  const planMsgs = (cap.alerts ?? []).map((a) => a.message).filter((m) => m.startsWith('BTC Trading Assistant · '));
+  check(planMsgs.length > 0, `plan alerts are actually delivered, not merely spelled (${planMsgs.length} captured)`);
+  const first = planMsgs[0] ?? '';
+  check(/^BTC Trading Assistant · PLANNING · LONG · Entry touched at [\d,.]+$/.test(first),
+    `the delivered message names product, stage, direction, level and price — "${first}"`);
+
+  const capActive = await run(sample, { source: plan({ ...base, alerts: true, stage: 'Active' }), alertMode: 'historical' });
+  const activeMsgs = (capActive.alerts ?? []).map((a) => a.message).filter((m) => m.startsWith('BTC Trading Assistant · '));
+  check(activeMsgs.some((m) => m.includes('ACTIVE ·')), 'ACTIVE messages say ACTIVE, so an alert cannot be read as the wrong stage');
+  check(!activeMsgs.some((m) => m.includes('Entry touched')), 'ACTIVE never delivers an entry alert for a position already taken');
+  check(!planMsgs.some((m) => m.includes('Stop touched')), '...and PLANNING never delivers a stop alert for a trade not yet entered');
+  const ladderMsgs = activeMsgs.concat((await run(sample, { source: plan({ ...base, alerts: true, stage: 'Active', alertR: true }), alertMode: 'historical' })).alerts?.map((a) => a.message) ?? []);
+  check(ladderMsgs.some((m) => /(Stop|Target|1R|2R|3R) touched at/.test(m)), 'exit alerts name which level was touched');
   check(/barstate\.isconfirmed and not na\(lvl\)/.test(RAW),
     'touches are evaluated on confirmed bars, so an intrabar wick that closes back inside does not fire');
 
