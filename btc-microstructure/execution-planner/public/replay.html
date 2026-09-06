@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BTC Historical Replay</title>
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --line:#262d36; --tx:#e6edf3; --dim:#8b949e;
+          --ok:#3fb950; --warn:#d29922; --bad:#f85149; --acc:#58a6ff; --bid:#3fb950; --ask:#f85149; }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--tx); font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:12px; align-items:center }
+  h1 { font-size:15px; margin:0; letter-spacing:.09em }
+  a { color:var(--acc) }
+  main { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:12px; padding:12px; max-width:1500px }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 14px }
+  h2 { font-size:11px; letter-spacing:.13em; color:var(--dim); margin:0 0 10px; font-weight:600 }
+  .row { display:flex; justify-content:space-between; gap:12px; padding:2px 0 }
+  .row span:last-child { text-align:right; font-variant-numeric:tabular-nums }
+  .big { font-size:22px; font-variant-numeric:tabular-nums }
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .dim{color:var(--dim)} .warn{color:var(--warn)}
+  button,select,input { background:#21262d; color:var(--tx); border:1px solid var(--line); border-radius:6px; padding:6px 11px; cursor:pointer; font:inherit }
+  button.on { background:var(--acc); color:#06101c; border-color:var(--acc); font-weight:700 }
+  input[type=range] { width:100%; padding:0 }
+  table { width:100%; border-collapse:collapse; font-size:12px }
+  td { padding:2px 0 } td:last-child { text-align:right; font-variant-numeric:tabular-nums }
+  .bar { height:9px; background:#0d1117; border-radius:3px; overflow:hidden; display:flex }
+  .bar i { display:block; height:100% }
+  .note { color:var(--dim); font-size:11px; margin-top:8px; line-height:1.5 }
+</style>
+</head>
+<body>
+<header>
+  <h1>BTC HISTORICAL REPLAY</h1>
+  <select id="day"></select>
+  <button id="play">▶ play</button>
+  <button data-sp="1" class="sp on">1×</button>
+  <button data-sp="10" class="sp">10×</button>
+  <button data-sp="100" class="sp">100×</button>
+  <span id="clock" class="dim"></span>
+  <a href="/backtest">backtest report →</a>
+</header>
+
+<div style="padding:0 12px"><input id="seek" type="range" min="0" max="100" value="0"></div>
+
+<main>
+  <section>
+    <h2>Book</h2>
+    <div class="row"><span>Mid</span><span id="mid" class="big">—</span></div>
+    <div class="row"><span>Bid / Ask</span><span id="bidask">—</span></div>
+    <div class="row"><span>Spread</span><span id="spread">—</span></div>
+    <div class="row"><span>Microprice</span><span id="micro">—</span></div>
+    <div class="row"><span>Levels tracked</span><span id="levels">—</span></div>
+  </section>
+
+  <section>
+    <h2>Depth by distance from mid (quote notional)</h2>
+    <table id="ladder"></table>
+    <p class="note">These are the aggregated bands the feature store keeps. The full price
+      ladder is not stored — it is recomputable by re-replaying the archive, which is what
+      <code>historical/replay.mjs</code> does.</p>
+  </section>
+
+  <section>
+    <h2>Imbalance and flow</h2>
+    <div class="row"><span>Top-5 imbalance</span><span id="imb5" class="big">—</span></div>
+    <div class="bar" style="margin:6px 0 10px"><i id="barBid"></i><i id="barAsk"></i></div>
+    <div class="row"><span>top1 / top10 / weighted</span><span id="imbAll">—</span></div>
+    <div class="row"><span>AFI 5s / 30s</span><span id="afi">—</span></div>
+    <div class="row"><span>Signed flow 5s</span><span id="signed">—</span></div>
+    <div class="row"><span>Pressure to capacity</span><span id="p2c">—</span></div>
+    <div class="row"><span>Flow × fragility</span><span id="fxf">—</span></div>
+  </section>
+
+  <section>
+    <h2>Execution, $10,000 market order</h2>
+    <div class="row"><span>BUY slippage vs mid</span><span id="slipBuy" class="big">—</span></div>
+    <div class="row"><span>SELL slippage vs mid</span><span id="slipSell">—</span></div>
+    <div class="row"><span>Fillable from the book</span><span id="fillable">—</span></div>
+    <p class="note">Slippage plus the 5 bp taker fee is the all-in cost of crossing at that
+      instant — the same arithmetic the live planner runs, on the reconstructed book.</p>
+  </section>
+
+  <section>
+    <h2>Signal state</h2>
+    <div class="row"><span>Directional model</span><span id="sig" class="big">—</span></div>
+    <p class="note" id="sigWhy">—</p>
+  </section>
+
+  <section>
+    <h2>Mid, last 10 minutes</h2>
+    <canvas id="spark" width="600" height="120" style="width:100%;height:120px"></canvas>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const usd = (x) => (x == null ? '—' : '$' + Math.round(x).toLocaleString());
+const bp = (x, d = 3) => (x == null ? '—' : x.toFixed(d) + ' bp');
+const px = (x) => (x == null ? '—' : x.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 2 }));
+
+let day = null, rows = 0, buf = null, bufFrom = 0, cursor = 0, playing = false, speed = 1;
+const hist = [];
+
+async function init() {
+  const info = await (await fetch('/api/days')).json();
+  if (!info.days.length) { document.body.innerHTML = '<p style="padding:24px">No days in the feature store. Run <code>npm run m2h:replay</code> first.</p>'; return; }
+  const want = new URLSearchParams(location.search).get('date') || info.startDate;
+  for (const d of info.days) {
+    const o = document.createElement('option'); o.value = o.textContent = d;
+    if (d === want) o.selected = true;
+    $('day').appendChild(o);
+  }
+  day = $('day').value;
+  $('day').onchange = () => { day = $('day').value; cursor = 0; buf = null; hist.length = 0; load(); };
+  await load();
+}
+
+async function load() {
+  const r = await (await fetch(`/api/frames?day=${day}&from=${cursor}&count=1200`)).json();
+  buf = r.cols; bufFrom = r.from; rows = r.rows;
+  $('seek').max = String(rows - 1);
+  draw();
+}
+
+function frameAt(i) {
+  if (!buf || i < bufFrom || i >= bufFrom + buf.at.length) return null;
+  const k = i - bufFrom, f = {};
+  for (const c in buf) f[c] = buf[c][k];
+  return f;
+}
+
+async function ensure(i) {
+  if (!buf || i < bufFrom || i >= bufFrom + buf.at.length - 60) {
+    const r = await (await fetch(`/api/frames?day=${day}&from=${Math.max(0, i)}&count=1200`)).json();
+    buf = r.cols; bufFrom = r.from; rows = r.rows;
+  }
+}
+
+function draw() {
+  const f = frameAt(cursor);
+  if (!f) return;
+  $('clock').textContent = new Date(f.at).toISOString().replace('T', ' ').slice(0, 19) + 'Z   ' + (cursor + 1) + '/' + rows;
+  $('seek').value = String(cursor);
+  $('mid').textContent = px(f.mid);
+  $('bidask').textContent = px(f.bid) + '  /  ' + px(f.ask);
+  $('spread').textContent = (f.ask - f.bid).toFixed(2) + '   (' + bp(f.spreadBp) + ')';
+  $('micro').textContent = px(f.microprice) + '   (' + bp(f.micropriceDisplacementBp) + ')';
+  $('levels').textContent = f.bidLevels + ' bid / ' + f.askLevels + ' ask';
+
+  $('ladder').innerHTML = '<tr><td class="dim">band</td><td class="dim">bid</td><td class="dim">ask</td></tr>' +
+    [['within 1 bp', 'depthBid1bp', 'depthAsk1bp'], ['within 2 bp', 'depthBid2bp', 'depthAsk2bp'],
+     ['within 5 bp', 'depthBid5bp', 'depthAsk5bp'], ['within 10 bp', 'depthBid10bp', 'depthAsk10bp'],
+     ['top 1', 'depthBidTop1', 'depthAskTop1'], ['top 5', 'depthBidTop5', 'depthAskTop5'],
+     ['top 10', 'depthBidTop10', 'depthAskTop10']]
+      .map(([l, b, a]) => `<tr><td>${l}</td><td class="ok">${usd(f[b])}</td><td class="bad">${usd(f[a])}</td></tr>`).join('');
+
+  $('imb5').textContent = f.imbTop5 == null ? '—' : f.imbTop5.toFixed(3);
+  const pct = f.imbTop5 == null ? 50 : (f.imbTop5 + 1) / 2 * 100;
+  $('barBid').style.width = pct + '%'; $('barBid').style.background = 'var(--bid)';
+  $('barAsk').style.width = (100 - pct) + '%'; $('barAsk').style.background = 'var(--ask)';
+  $('imbAll').textContent = [f.imbTop1, f.imbTop10, f.imbWeighted].map((x) => (x == null ? '—' : x.toFixed(3))).join(' / ');
+  $('afi').textContent = [f.flow5sAfi, f.flow30sAfi].map((x) => (x == null ? '—' : x.toFixed(3))).join(' / ');
+  $('signed').textContent = usd(f.flow5sSigned);
+  $('p2c').textContent = f.pressureToCapacity == null ? '—' : f.pressureToCapacity.toExponential(2);
+  $('fxf').textContent = f.flowTimesFragility == null ? '—' : f.flowTimesFragility.toExponential(2);
+
+  $('slipBuy').textContent = bp(f.execBuy10kSlipBp);
+  $('slipSell').textContent = bp(f.execSell10kSlipBp);
+  $('fillable').textContent = f.execBuy10kComplete ? 'yes' : 'NO — book too thin';
+
+  hist.push(f.mid); if (hist.length > 600) hist.shift();
+  spark();
+}
+
+function spark() {
+  const c = $('spark'), g = c.getContext('2d');
+  g.clearRect(0, 0, c.width, c.height);
+  if (hist.length < 2) return;
+  const lo = Math.min(...hist), hi = Math.max(...hist), rg = hi - lo || 1;
+  g.strokeStyle = '#58a6ff'; g.lineWidth = 1.5; g.beginPath();
+  hist.forEach((v, i) => {
+    const x = (i / (hist.length - 1)) * c.width, y = c.height - ((v - lo) / rg) * (c.height - 10) - 5;
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  });
+  g.stroke();
+}
+
+async function tick() {
+  if (!playing) return;
+  cursor = Math.min(rows - 1, cursor + speed);
+  await ensure(cursor);
+  draw();
+  if (cursor >= rows - 1) { playing = false; $('play').textContent = '▶ play'; }
+}
+setInterval(tick, 1000);
+
+$('play').onclick = () => { playing = !playing; $('play').textContent = playing ? '❚❚ pause' : '▶ play'; };
+document.querySelectorAll('.sp').forEach((b) => { b.onclick = () => {
+  speed = Number(b.dataset.sp);
+  document.querySelectorAll('.sp').forEach((x) => x.classList.toggle('on', x === b));
+}; });
+$('seek').oninput = async () => { cursor = Number($('seek').value); hist.length = 0; await ensure(cursor); draw(); };
+
+fetch('/api/research').then((r) => r.json()).then((r) => {
+  if (!r.available) { $('sig').textContent = 'NOT RUN'; $('sigWhy').textContent = 'Run `npm run research:m2h` to produce the historical verdict.'; return; }
+  const validated = r.historicalPass === true;
+  $('sig').textContent = validated ? 'RETROSPECTIVE PASS' : (r.status || 'REJECTED');
+  $('sig').className = 'big ' + (validated ? 'ok' : 'warn');
+  $('sigWhy').textContent = validated
+    ? 'A directional model passed the historical gates. It is still only retrospective until prospective capture confirms it, so no live signal is drawn here.'
+    : 'No directional model passed the historical gates, so there is no signal to overlay on this replay. The book, flow and execution state above are measurements, not predictions.';
+});
+
+init();
+</script>
+</body>
+</html>

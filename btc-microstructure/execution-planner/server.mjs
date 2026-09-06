@@ -15,6 +15,31 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = resolve(HERE, 'public');
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript', '.json': 'application/json' };
 
+/**
+ * The historical (M2-H) verdict, read from the study output. A historical pass is
+ * RETROSPECTIVE only: it may never be shown as "validated" on its own, because the
+ * prospective sample that would confirm it is still being collected.
+ */
+function historicalStatus() {
+  const f = resolve(HERE, '..', 'research', 'results-m2h.json');
+  if (!existsSync(f)) return { available: false, state: 'NOT RUN', reason: 'run `npm run research:m2h`' };
+  try {
+    const r = JSON.parse(readFileSync(f, 'utf8'));
+    const best = Object.entries(r.economics || {})
+      .filter(([, e]) => Number.isFinite(e.grossEdgeBp))
+      .sort((a, b) => b[1].grossEdgeBp - a[1].grossEdgeBp)[0];
+    return { available: true, state: r.status, pass: r.historicalPass === true,
+      acceptanceEligible: r.acceptanceEligible === true, reason: r.coverage?.reason ?? null,
+      window: r.splits ? `${r.splits.dev[0]} → ${r.splits.test[1]}` : null,
+      daysInWindow: r.coverage?.daysInWindow ?? 0, requiredDays: r.coverage?.requiredDays ?? 0,
+      bestFeature: best?.[0] ?? null,
+      bestGrossEdgeBp: best?.[1]?.grossEdgeBp ?? null,
+      executableCostBp: best?.[1]?.profiles?.B?.roundTripBp ?? null,
+      netEdgeBp: best?.[1]?.profiles?.B?.netEdgeBp ?? null,
+      generated: r.generated };
+  } catch { return { available: false, state: 'UNKNOWN', reason: 'results file unreadable' }; }
+}
+
 // There is no validated directional model. This is not a placeholder to be flipped by
 // hand: nothing may set it true except a passing M2 directional gate written into
 // research/results-m2.json, and the server checks that file rather than trusting a flag.
@@ -41,7 +66,7 @@ export function start({ port = PLANNER.port } = {}) {
     };
 
     if (url.pathname === '/api/status') {
-      return send(200, { ...collector.status(), directional: directionalStatus(), coverage: coverage(),
+      return send(200, { ...collector.status(), directional: directionalStatus(), historical: historicalStatus(), coverage: coverage(),
         fees: FEES, costProfiles: COST_PROFILES, wsLimits: WS_LIMITS,
         planner: { defaultNotionalUsd: PLANNER.defaultNotionalUsd, presets: PLANNER.presetNotionalUsd, maxAllInCostBp: PLANNER.maxAllInCostBp } });
     }
@@ -69,7 +94,7 @@ export function start({ port = PLANNER.port } = {}) {
         liquidity: liquidityState(fx), pressure: bookPressure(fx),
         book: { bid: fx?.bid, ask: fx?.ask, mid: fx?.mid, spreadBp: fx?.spreadBp, microprice: fx?.microprice,
           micropriceDisplacementBp: fx?.micropriceDisplacementBp, depth: fx?.depth, imbalance: fx?.imbalance, flow: fx?.flow },
-        feeds: st.feeds, directional: directionalStatus(),
+        feeds: st.feeds, directional: directionalStatus(), historical: historicalStatus(),
       });
     }
 

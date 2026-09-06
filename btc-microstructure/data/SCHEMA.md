@@ -108,3 +108,37 @@ Measured on BTCUSDT: depth ≈ 10 msg/s, aggTrade ≈ 4.5 msg/s, features 1/s, a
 on the order of **9 GB**. That figure was taken on a quiet weekend; an active weekday
 will be higher. Live usage is reported by the collector and on the planner's integrity
 panel. `bookTicker` (~140 msg/s) is deliberately not persisted.
+
+
+---
+
+# Historical feature store (M2-H)
+
+Separate tree, separate version, and never merged with the live prospective data.
+
+```
+data/historical/
+├── MANIFEST-M2H.json          # per day: rows, bytes, sha256, coverage, source
+├── fs1/<YYYY-MM-DD>.fs.gz     # one columnar file per replayed UTC day
+└── .scratch/                  # vendor archives in flight, deleted after each day
+```
+
+**Format.** A JSON header line (padded so the data starts on an 8-byte boundary), then the
+concatenated Float64 column buffers in the fixed order given by `COLUMNS` in
+`historical/store.mjs`, all gzipped. Adding or reordering a column is a **store version
+bump**, not an edit. About 23 MB per day for 86,400 rows × 53 columns.
+
+**Columns.** The same measurements the live collector writes, plus the pre-declared
+execution estimates: identity (`at`), price (`bid`, `ask`, `mid`, `spreadBp`,
+`microprice`, `micropriceDisplacementBp`), depth by band and by level for both sides,
+imbalances, flow over 1 s / 5 s / 30 s, the four interactions, and
+`exec{Buy,Sell}{10k,50k}{Vwap,SlipBp,Complete}`.
+
+**Provenance.** Every entry in `MANIFEST-M2H.json` records `source`, `depthEvents`,
+`tradeEvents`, `snapshots`, `crossedBooks`, `invalidations`, `maxBookLevels`,
+`validCoveragePct`, `pruneBandPct`, `archiveBytes`, `bytes` and `sha256`.
+`npm run m2h:verify` re-checksums the tree.
+
+**Derived, not a source.** The store is regenerable from the vendor archives by
+`npm run m2h:replay`. The raw archives are not kept: they are 400 MB–1 GB per day and
+re-downloadable, whereas the live prospective raw log *is* kept because it cannot be.

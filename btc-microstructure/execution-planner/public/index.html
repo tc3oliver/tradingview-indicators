@@ -124,6 +124,18 @@
   </section>
 
   <section>
+    <h2>Directional research — historical evidence</h2>
+    <div class="row"><span>Study M2-H</span><span id="hStatus" class="big">—</span></div>
+    <div class="row"><span>Dataset</span><span id="hWindow" class="dim">—</span></div>
+    <div class="row"><span>Best gross edge</span><span id="hEdge">—</span></div>
+    <div class="row"><span>Executable cost</span><span id="hCost">—</span></div>
+    <div class="row"><span>Net edge</span><span id="hNet">—</span></div>
+    <p class="note" id="hWhy">—</p>
+    <p class="note">Full report and day replay: run <code>npm run replay</code> and open
+      <a href="http://localhost:8788/backtest" style="color:var(--acc)">the backtest page</a>.</p>
+  </section>
+
+  <section>
     <h2>Data integrity</h2>
     <div class="row"><span>Book</span><span id="mBook">—</span></div>
     <div class="row"><span>Depth feed age</span><span id="mDepth">—</span></div>
@@ -176,6 +188,22 @@ async function tick() {
   $('mFeat').textContent = s.counters.featureRecords.toLocaleString() + ' (' + s.phase + ')';
   $('mDisk').textContent = (s.storage.diskBytes / 1048576).toFixed(1) + ' MB';
   $('mUp').textContent = age(s.uptimeSec * 1000);
+
+  const h = s.historical || { available: false, state: 'NOT RUN' };
+  $('hStatus').textContent = h.state || 'NOT RUN';
+  $('hStatus').className = 'big ' + (h.pass ? 'ok' : h.available ? 'warn' : 'dim');
+  $('hWindow').textContent = h.window ? `${h.window}  (${h.daysInWindow}/${h.requiredDays} days)` : '—';
+  $('hEdge').textContent = Number.isFinite(h.bestGrossEdgeBp) ? bp(h.bestGrossEdgeBp) + (h.bestFeature ? '  ' + h.bestFeature : '') : '—';
+  $('hCost').textContent = Number.isFinite(h.executableCostBp) ? bp(h.executableCostBp) : '—';
+  $('hNet').textContent = Number.isFinite(h.netEdgeBp) ? bp(h.netEdgeBp) : '—';
+  $('hNet').className = Number.isFinite(h.netEdgeBp) ? (h.netEdgeBp > 0 ? 'ok' : 'bad') : '';
+  $('hWhy').textContent = !h.available
+    ? 'The historical study has not been run yet.'
+    : h.pass
+      ? 'A model passed the historical gates. It is RETROSPECTIVE PASS / PROSPECTIVE COLLECTING until live capture confirms it — this tool will not call it validated before then.'
+      : h.acceptanceEligible === false
+        ? 'Preliminary only: ' + (h.reason || 'the acceptance window is not covered') + '. No PASS can be issued from this sample.'
+        : 'No directional model passed on historical order-book data. Gross edge was smaller than the cost of trading it.';
 
   const c = s.coverage;
   $('pstart').textContent = c.prospectiveStart || 'not started';

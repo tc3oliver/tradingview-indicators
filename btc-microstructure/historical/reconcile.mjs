@@ -196,6 +196,61 @@ export async function reconcile(day, { minutes = 10, batchMs = 100 } = {}) {
   return out;
 }
 
+/**
+ * Pool reconciliation over several days.
+ *
+ * Free replay access caps a response at roughly 3.2 MB, which on this instrument is about
+ * one minute of raw depth — measured, not assumed. The pre-registered overlap threshold is
+ * a count of compared seconds, not a requirement that they be consecutive, so the window is
+ * pooled across days instead of stretched.
+ */
+export async function reconcileDays(days, { minutes = 5 } = {}) {
+  const parts = [];
+  for (const d of days) {
+    try { parts.push(await reconcile(d, { minutes })); }
+    catch (e) { parts.push({ day: d, error: String(e.message || e) }); }
+  }
+  const ok = parts.filter((r) => r.csvVsRaw);
+  if (!ok.length) return { days, parts, error: 'no day reconciled' };
+  const pool = (path, field) => {
+    const out = {};
+    for (const [name] of COMPARE) {
+      const vals = [];
+      for (const r of ok) {
+        const s2 = r[path]?.[field]?.[name];
+        if (s2 && Number.isFinite(s2.median)) vals.push(s2);
+      }
+      // Pooling summaries rather than raw arrays: the worst median and the worst tail are
+      // what the thresholds are about, and keeping every difference would mean holding
+      // several days of per-second comparisons in memory for no extra information.
+      out[name] = vals.length ? {
+        n: vals.reduce((s2, v) => s2 + v.n, 0),
+        median: Math.max(...vals.map((v) => v.median)),
+        p99: Math.max(...vals.map((v) => v.p99 ?? NaN)),
+        max: Math.max(...vals.map((v) => v.max ?? NaN)),
+      } : { n: 0 };
+    }
+    return out;
+  };
+  const sum = (f) => ok.reduce((s2, r) => s2 + (f(r) || 0), 0);
+  return {
+    days, minutes, parts,
+    windows: ok.map((r) => ({ day: r.day, from: r.from, to: r.to, compared: r.csvVsRaw.compared, rawSeconds: r.raw.seconds })),
+    raw: { applied: sum((r) => r.raw.applied), gaps: sum((r) => r.raw.gaps), dropped: sum((r) => r.raw.dropped),
+      crossed: sum((r) => r.raw.crossed), seconds: sum((r) => r.raw.seconds),
+      tradeSides: { buy: sum((r) => r.raw.tradeSides.buy), sell: sum((r) => r.raw.tradeSides.sell) } },
+    csvVsRaw: { compared: sum((r) => r.csvVsRaw.compared), missingInStore: sum((r) => r.csvVsRaw.missingInStore),
+      relative: pool('csvVsRaw', 'relative'), absolute: pool('csvVsRaw', 'absolute') },
+    batchedVsRaw: { compared: sum((r) => r.batchedVsRaw?.compared), relative: pool('batchedVsRaw', 'relative') },
+    aggressorSide: {
+      n: sum((r) => r.aggressorSide?.n),
+      correlation: Math.min(...ok.map((r) => r.aggressorSide?.correlation ?? NaN)),
+      correlationIfFlipped: Math.max(...ok.map((r) => r.aggressorSide?.correlationIfFlipped ?? NaN)),
+      note: ok[0].aggressorSide?.note,
+    },
+  };
+}
+
 /** Pass/fail on the reconciliation, with thresholds fixed in the M2-H pre-registration. */
 export function verdict(r) {
   const exchangeState = ['bid', 'ask', 'spreadBp', 'microprice', 'depthBidTop5', 'depthAskTop5', 'imbTop5', 'imbTop10'];

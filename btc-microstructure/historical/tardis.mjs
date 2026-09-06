@@ -113,10 +113,36 @@ export async function* streamDataset(dataType, iso, symbol = SYMBOL) {
   }
 }
 
-/** Raw Binance payloads for a window. Used to prove semantics, not to bulk-load. */
+/**
+ * Raw Binance payloads for a window. Used to prove semantics, not to bulk-load.
+ *
+ * Fetched through curl for the same reason the datasets are: a long-running HTTP/2 body
+ * dies partway with NGHTTP2_PROTOCOL_ERROR, and a silently truncated reconciliation
+ * window would look like a short overlap rather than an error.
+ */
 export async function* streamReplay(fromIso, toIso, channels = 'depth', symbol = SYMBOL) {
-  const res = await open(replayUrl(fromIso, toIso, channels, symbol));
-  const rl = createInterface({ input: Readable.fromWeb(res.body), crlfDelay: Infinity });
+  mkdirSync(SCRATCH, { recursive: true });
+  const list = (Array.isArray(channels) ? channels : [channels]).join('+');
+  const tag = `${fromIso}_${toIso}_${list}`.replace(/[^0-9a-zA-Z._+-]/g, '');
+  const file = join(SCRATCH, `replay-${symbol}-${tag}.ndjson`);
+  if (!existsSync(file) || statSync(file).size === 0) {
+    const args = ['-sfL', '--http1.1', '--retry', '6', '--retry-delay', '3', '--retry-all-errors',
+      '-o', file, replayUrl(fromIso, toIso, channels, symbol)];
+    if (apiKey()) args.push('-H', `Authorization: Bearer ${apiKey()}`);
+    await new Promise((resolve, reject) => {
+      const c = spawn('curl', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+      let err = '';
+      c.stderr.on('data', (d) => { err += d; });
+      c.on('close', (code) => {
+        if (code === 0) return resolve();
+        try { if (existsSync(file)) unlinkSync(file); } catch { /* nothing to clean */ }
+        const e = new Error(`curl exit ${code} for replay ${tag}${err ? ` — ${err.slice(0, 200)}` : ''}`);
+        e.status = code === 22 ? 401 : null;
+        reject(e);
+      });
+    });
+  }
+  const rl = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
   for await (const line of rl) {
     if (!line) continue;
     const sp = line.indexOf(' ');

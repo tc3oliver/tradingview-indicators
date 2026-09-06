@@ -70,10 +70,30 @@ Below the pre-registered sample gate this writes `research/STATUS-M2.md` saying
 gate is met, the same command runs the execution study and the directional study and
 writes `research/RESULTS-M2.md`. **No code needs to change in between.**
 
+## Historical study (M2-H)
+
+```bash
+npm run m2h:days           # what the acceptance window needs vs what you can fetch
+npm run m2h:replay         # build the feature store (resumable, skips days already built)
+npm run m2h:reconcile      # vendor vs sequence-verified feed -> research/RECONCILIATION-M2H.md
+npm run m2h:verify         # re-checksum every stored day
+npm run research:m2h       # the study -> research/RESULTS-M2H.md
+npm run replay -- --date 2020-06-01    # day replay + backtest report at localhost:8788
+```
+
+Without `TARDIS_API_KEY` the provider serves the first day of each month only — 75 of the
+2,301 days in the acceptance window. Everything still runs; the verdict is reported as
+**BLOCKED BY HISTORICAL DATA ACCESS** and no PASS can be issued. With a key, the same
+commands cover the whole window with no code change. Budget and volumes are in
+[`research/DATA-REQUIREMENTS.md`](./research/DATA-REQUIREMENTS.md).
+
+Replaying is about 150 s and 23 MB of feature store per day; the archive scratch copy is
+deleted after each day, so peak disk is roughly one day's archive plus the store.
+
 ## Tests
 
 ```bash
-npm test        # 91 checks: book, execution, storage, prospective boundary, research, UI
+npm test        # 126 checks: book, execution, storage, prospective boundary, research, UI
 npm run test:m1 # the earlier study's estimator and feature invariants
 ```
 

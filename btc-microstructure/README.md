@@ -13,11 +13,12 @@ cd btc-microstructure && npm start     # then open http://localhost:8787
 
 No dependencies, no API key, read-only public market data, no orders ever placed.
 
-**B. Directional research (Study M2) — pre-registered, collecting.** Whether the order
-book predicts the next 30 seconds. It may print LONG or SHORT only after passing every
-gate in [`research/PRE-REGISTRATION-M2.md`](./research/PRE-REGISTRATION-M2.md), the
-economic one included. Right now the honest status is **COLLECTING**, and the planner
-shows **NO VALIDATED DIRECTIONAL SIGNAL**.
+**B. Directional research — answered two ways.** **M2-H** replays years of real Binance
+L2 from Tardis.dev and answers *today* whether the order book predicts the next 30
+seconds; **M2** keeps capturing live data as the prospective confirmation. Either may
+print LONG or SHORT only after passing every gate, the economic one included. A
+historical pass is shown as **RETROSPECTIVE PASS / PROSPECTIVE COLLECTING** — never as
+"validated".
 
 Also here: **Study M1**, a completed and rejected study of raw aggressive trade flow.
 
@@ -51,7 +52,40 @@ aggTrade ids at 2021-05-19 13:15 UTC.
 
 ---
 
-## Study M2 — order book (pre-registered, collecting)
+## Study M2-H — historical order book (pre-registered, running)
+
+The point of M2-H is not to wait thirty days to learn whether there is anything here.
+It replays **Tardis.dev `binance-futures` BTCUSDT** tick-level L2 through the *same* order
+book and the *same* feature engine the live planner uses, and runs the whole study —
+information, economics, walk-the-book backtest, execution study — on real history.
+
+**The reconciliation is what licenses it.** The bulk source is Tardis's normalised CSV,
+which carries no Binance `U`/`u`/`pu`, so the exchange's continuity rule cannot be applied
+to it. So the same windows are rebuilt from the **raw Binance payloads** through the
+strict sequence-verified path and compared second by second:
+
+| check | result |
+|---|---|
+| CSV path reproduces the sequence-verified book (bid, ask, spread, microprice, depth, imbalance) | median relative difference **0.0** over 465 pooled seconds |
+| our live `@100ms` depth ≡ the `@0ms` capture, tested by batching the raw stream | median relative difference **0.0** |
+| the CSV `side` column is the liquidity taker | correlation **+0.998** against the raw `m` flag, **−0.998** flipped |
+
+Read [`research/RECONCILIATION-M2H.md`](./research/RECONCILIATION-M2H.md),
+[`research/PRE-REGISTRATION-M2H.md`](./research/PRE-REGISTRATION-M2H.md),
+[`research/AUDIT-M2H.md`](./research/AUDIT-M2H.md) and
+[`research/RESULTS-M2H.md`](./research/RESULTS-M2H.md).
+
+### Data access is the one real blocker
+
+Without `TARDIS_API_KEY` the provider serves **the first day of each month only** — 75 of
+the 2,301 days in the acceptance window. Every part of the pipeline runs on those days,
+which is what makes the engineering verifiable, but the pre-registration forbids treating
+them as the acceptance dataset, so the verdict reads **BLOCKED BY HISTORICAL DATA
+ACCESS** and no PASS can be issued. With a key the same commands cover the whole window
+with no code change: see [`research/DATA-REQUIREMENTS.md`](./research/DATA-REQUIREMENTS.md)
+for the ~1–2.5 TB / ~50 GB / several-days-of-replay budget.
+
+## Study M2 — live order book (pre-registered, collecting)
 
 M1 answered its question at 5-minute resolution and the answer was "information yes,
 tradability no". M2 goes to the book itself, at 1-second resolution, and puts the
@@ -120,7 +154,14 @@ written from the docs alone would have silently recorded no trades at all.
 npm start              # Execution Planner + collector, http://localhost:8787
 npm run collector      # headless 24/7 capture, no UI
 npm run research:m2    # STATUS-M2.md now; RESULTS-M2.md once the sample gate is met
-npm test               # 91 checks
+
+npm run m2h:days       # what the acceptance window needs vs what you can fetch
+npm run m2h:replay     # build the historical feature store (resumable)
+npm run m2h:reconcile  # vendor vs sequence-verified feed
+npm run research:m2h   # the historical study -> research/RESULTS-M2H.md
+npm run replay -- --date 2020-06-01   # day replay + backtest report, http://localhost:8788
+
+npm test               # 126 checks
 npm run probe          # re-verify the live payload shapes
 ```
 
@@ -134,6 +175,7 @@ M1 is reproducible separately — see the commands in
 | `collector/` | config and fees, order book, websockets, storage, freeze marker |
 | `features/` | book and flow measurements, walk-the-book execution estimate |
 | `execution-planner/` | local read-only server and UI |
-| `research/` | M1 (done) and M2 (pre-registered) studies, literature audit, live payload probe |
+| `historical/` | Tardis adapter, canonical event schema, streaming replay, columnar store, reconciliation, replay viewer |
+| `research/` | M1 (done), M2 (prospective) and M2-H (historical) studies, literature audit, live payload probe |
 | `tests/` | book, execution, storage, prospective boundary, research pipeline, UI |
 | `data/` | schema, manifest, partitioned event log (not committed) |
