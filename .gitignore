@@ -1,7 +1,4 @@
 node_modules/
 .omc/
 .DS_Store
-btc-4h-regime-engine/data/cache/
 *.log
-btc-4h-market-intelligence/node_modules/
-btc-4h-market-intelligence/audit/states.json
