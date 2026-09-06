@@ -1,0 +1,18 @@
+{
+  "name": "btc-trading-assistant",
+  "version": "1.0.0",
+  "description": "One BTC TradingView indicator: descriptive 4H market context plus a mechanical fixed-risk trade planner. No automatic directional signals — none of the eight pre-registered studies in research/ produced a tradable one.",
+  "author": "tc3oliver",
+  "license": "MPL-2.0",
+  "type": "module",
+  "scripts": {
+    "test": "node tests/run.mjs && node --max-old-space-size=8192 tools/microstructure/tests/run.mjs",
+    "test:pine": "node tests/run.mjs",
+    "test:collector": "node --max-old-space-size=8192 tools/microstructure/tests/run.mjs",
+    "fetch": "node tools/fetch-4h.mjs",
+    "collector": "node tools/microstructure/collector/run.mjs",
+    "freeze": "node tools/microstructure/collector/freeze.mjs",
+    "research:m2": "node --max-old-space-size=8192 tools/microstructure/research/m2.mjs"
+  },
+  "devDependencies": { "pinets": "^0.9.33" }
+}

@@ -1,5 +1,0 @@
-data/cache/
-node_modules/
-research/paper/*.pdf
-research/paper/*.txt
-*.log

@@ -1,8 +1,0 @@
-{
-  "name": "btc-intraday-trade-planner",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "test": "node research/smoke.mjs"
-  }
-}

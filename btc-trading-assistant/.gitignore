@@ -1,0 +1,16 @@
+node_modules/
+
+# Test dataset: Binance 4H history, rebuilt with `npm run fetch`. Large, and
+# regenerable, so it is not committed.
+tests/data/
+
+# Live M2 prospective capture. This is the study's evidence, not source: raw
+# order-book and trade archives, the manifest, the collector's resume state and
+# the prospective boundary marker.
+tools/microstructure/data/l2/
+tools/microstructure/data/MANIFEST.json
+tools/microstructure/data/PROSPECTIVE.json
+tools/microstructure/data/collector-state.json
+tools/microstructure/data/*.lock
+
+*.log
