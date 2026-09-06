@@ -12,11 +12,12 @@
 **Reproduce**
 
 ```bash
-npm test                                # 27 offline checks
+npm test                                # 32 offline checks
 node audit/extract-states.mjs           # run the frozen indicator over the full window
 node audit/hysteresis-verify.mjs
 node audit/smoothing-audit.mjs
 node audit/oi4h-deseasonalization.mjs
+node audit/risk-budget-validation.mjs   # REJECTED — kept as the record
 node audit/event-log.mjs
 ```
 
@@ -24,6 +25,76 @@ node audit/event-log.mjs
 > true things about the data. It establishes nothing about predictive value, and
 > no test in it computes a forward return. The evidence level of every state is
 > still DESCRIPTIVE.
+
+## 0. v3.3 — a presentation rewrite, and a feature that failed its own gates
+
+### 0.0.0 The panel was correct and unreadable
+
+Three rounds of correctness work produced a dashboard of up to 55 rows in which
+every number was true and almost none of it was legible without knowing what a
+σ ladder is. `OI 24H  -1.25% | 22.3p | -0.66σ | UNUSUAL REDUCTION [σ]` is five
+statements in one cell, four of which are for the author of the indicator.
+
+The fix is a **Decision** view: ten to fourteen rows, plain English, and nothing
+printed about anything behaving normally. The old panel survives as *Detailed*,
+and the internals it hid are now explicit in *Debug*.
+
+The risk this creates is obvious and is the reason check 27 exists. A display
+rewrite touching a file where display code and measurement code share scope can
+silently move a number. So the pre-refactor indicator is frozen in
+`audit/main-v3.2-baseline.pine` (sha256 `0919af37…`) and every measured output
+is compared against it bar by bar, in both adapter configurations, together with
+the whole alert stream. All 61 hooks and all 861 alerts are identical. The one
+excluded hook is `t_rowsUsed`, which is the thing that was changed on purpose.
+
+Check 28 asserts the same claim from the other direction: the three modes
+produce identical numbers and differ only in panel height (11 / 53 / 63 rows).
+
+### 0.0.0b A risk budget was specified, built, and rejected
+
+The one new decision module in the brief: scale a position by
+`referenceVol / currentVol` so the same nominal exposure carries roughly the
+same market risk in a quiet month and a violent one. Frozen specification,
+written before the first run:
+
+```
+currentVol   = rvol30                      (existing, already audited)
+referenceVol = median(rvol30, 2190 bars)   (365 days at 4H)
+riskMult     = clamp(referenceVol / currentVol, 0.25, 1.00)
+```
+
+Seven adoption gates, also fixed before the first run, and no return, Sharpe or
+profit metric anywhere in the file. Arms: constant full exposure, the scaled
+rule, and a **flat control** at the scaled rule's average exposure — the last
+one present because the primary metric is a coefficient of variation, which is
+scale-free, so simply taking smaller size must not be able to pass.
+
+| gate | requirement | result | |
+|---|---|---|---|
+| G1 | CV of rolling 24H realised vol falls ≥ 10% | **3.2%** | ❌ |
+| G2 | CV of rolling 7D realised vol falls ≥ 10% | 15.1% | ✅ |
+| G3 | 99th-pct adverse 24H move does not increase | 0.0707 vs 0.0800 | ✅ |
+| G4 | worst rolling 7D realised vol falls ≥ 20% | 26.4% | ✅ |
+| G5 | average exposure ≥ 0.50 | 0.897 | ✅ |
+| G6 | turnover ≤ 0.05 per 4H bar | 0.0087 | ✅ |
+| G7 | flat control must FAIL G1 and G2 | control moves 0.0% / −0.0% | ✅ |
+
+Six of seven. The pre-registration said all seven, so **the module is not in
+`main.pine`**. The floor was not moved, the window was not changed, and the 10%
+was not lowered to 3%.
+
+One observation is recorded and was not acted on: a 6-bar standard deviation is
+a very noisy estimator, and its coefficient of variation is dominated by
+sampling error rather than by the volatility regime — which is a plausible
+reason a rule scaled off a 30-bar volatility cannot move it, and is consistent
+with the 42-bar measure improving 15.1%. That is a hypothesis for a separately
+pre-registered test. It is not grounds to overturn this one, because an argument
+constructed after seeing which gate failed is the exact thing pre-registration
+exists to disallow.
+
+`audit/risk-budget-validation.mjs` is self-contained — it reads only `rvol30`
+and applies the frozen rule in JavaScript — so it keeps reproducing this verdict
+now that the Pine implementation is gone.
 
 ## 0. v3.2 — three statistical/semantic defects found in review of v3.1
 
@@ -379,7 +450,8 @@ the times are compared.
 ## 8. Table capacity
 
 Worst case — 9 anomalies, 5 events, all four adapters live — measured at
-**55 of 64** allocated rows. Every cell write is bounds-guarded, so exceeding
+**65 of 76** allocated rows in Debug mode, and 10–13 in the default Decision
+mode. Every cell write is bounds-guarded, so exceeding
 capacity would drop rows rather than corrupt the table. Section order is
 asserted against the specification.
 

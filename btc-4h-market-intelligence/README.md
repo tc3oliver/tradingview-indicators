@@ -2,22 +2,29 @@
 
 A TradingView Pine Script v6 **monitor**. It watches open interest, funding,
 perpetual premium, spot-vs-perp participation, liquidations, ETF flow and SOPR,
-normalises each against its own recent history, and answers four questions:
+normalises each against its own recent history, and — in its default **Decision**
+view, in ten to fourteen rows of plain English — answers four questions:
 
-1. **What has happened recently?** — RECENT EVENTS
-2. **What is unusual right now?** — CURRENT ANOMALIES
-3. **What are price and positioning doing together?** — MARKET MECHANICS
-4. **Which feeds can I actually trust?** — DATA HEALTH
+1. **What state is the market in?** — TREND
+2. **Is volatility higher than usual?** — RISK
+3. **What is the one thing worth looking at?** — MAIN THING TO WATCH
+4. **Can I trust any of this?** — DATA
 
 It does not tell you what will happen next, and it does not suggest what to do.
+There is no entry signal, no exit signal, and no position size, because none of
+those survived audit — the last row of the panel says so out loud.
+
+**Zero configuration for the core.** The four feeds every reading depends on are
+default symbols. Funding, ETF flow and liquidations are optional adapters, all
+off by default, and none of them blocks anything.
 
 > ### Status: CORE READY FOR MANUAL VALIDATION
 >
-> **Not ready for normal use.** 27 offline checks prove the logic is
+> **Not ready for normal use.** 32 offline checks prove the logic is
 > self-consistent and says true things about the data it was given. They cannot
 > prove the script compiles on TradingView, that any symbol resolves, or that a
 > single number on the chart is what it claims. Core acceptance is **A1–A5,
-> B1–B7, C1, E1, E4, E6** in
+> B1–B7, C1, E1, E1d, E4, E6** in
 > [`TRADINGVIEW-VALIDATION.md`](./TRADINGVIEW-VALIDATION.md), plus the D checks
 > for each external adapter you actually enable. Until that list is complete this
 > is a script under validation, not a tool.
@@ -442,33 +449,132 @@ on variant A's own z-score, so A was not handed the win by construction.
 
 ## 8. Dashboard
 
+Three display modes. **Decision is the default and is the product**; the other
+two exist because the numbers behind it should be inspectable, not because
+anyone needs to read them daily.
+
+The mode input is presentation and nothing else. Every measured output is
+bit-identical in all three, which `npm test` check 28 asserts bar by bar across
+all 56 hooks.
+
+### Decision — 10 to 14 rows
+
+```
+BTC 4H DECISION RADAR
+TREND                                                       STRONG UP
+RISK                                                        ELEVATED
+POSITIONING                                          EXTREME BUILD
+MAIN THING TO WATCH
+  Extreme open interest increase over the last 24 hours.  (+2 more in Detailed)
+DATA
+  Core                                                             OK
+  Optional                       0 / 4 connected            NONE ENABLED
+DESCRIPTIVE MARKET DATA        NO VALIDATED ENTRY / EXIT SIGNAL
+```
+
+It answers four questions and stops:
+
+| Row | Question | Source |
+|---|---|---|
+| TREND | what state is the market in | 200D Schmitt state + 12W momentum sign, summed |
+| RISK | is volatility higher than usual | the volatility percentile, unchanged |
+| POSITIONING | what is open interest doing | the OI 24H ladder, unchanged |
+| MAIN THING TO WATCH | what is the one thing worth looking at | highest attention priority |
+| DATA | can I trust any of this | core feed health, adapter count |
+
+**Nothing normal is printed.** No z-score, no percentile, no sample count, no
+per-feed freshness, no research vocabulary. With no anomalies the whole watch
+section collapses to one `MARKET ACTIVITY / NORMAL` row. Measured heights: 10
+rows quiet, 11 with something to watch, 13 worst case (a misconfigured adapter
+adds a SETUP REQUIRED block). Everything is at `size.tiny` — the same font
+every other section uses; nothing is fitted in by shrinking text.
+
+**TREND** is a deterministic translation of two existing price measurements and
+is not a forecast:
+
+| 200D state | 12W momentum | Word |
+|---|---|---|
+| above | up | STRONG UP |
+| above | down / flat | UP |
+| near | either | MIXED |
+| below | up / flat | DOWN |
+| below | down | STRONG DOWN |
+
+**POSITIONING** emits `NORMAL`, `UNUSUAL BUILD / REDUCTION` or
+`EXTREME BUILD / REDUCTION`. There is deliberately no intermediate
+"OI BUILDING" tier: producing one would need a new threshold on the raw 24H
+change, and this revision was not permitted to invent thresholds.
+
+**MAIN THING TO WATCH** picks exactly one line by *attention priority* — a
+readability ordering, not a significance claim:
+
+```
+1 core data failure   2 open interest   3 funding   4 premium
+5 liquidation spike   6 trend transition   7 ETF / SOPR   8 participation / RVOL
+```
+
+A broken feed outranks every reading, because a number from a feed that is not
+there is the worst thing the panel could print. Ties inside a priority break on
+percentile extremeness. This is a display ordering only — `CURRENT ANOMALIES`
+in Detailed still ranks by percentile extremeness, which is a property of the
+data rather than of the reader.
+
+**Core** is the four feeds every reading depends on: the reference perpetual,
+spot, base-unit open interest, and the confirmed daily 200MA. All four are
+default symbols needing zero configuration. SOPR is deliberately *not* core —
+it is a Glassnode symbol not every plan resolves, nothing in TREND, RISK or
+POSITIONING reads it, and letting it turn Core red would report a working
+indicator as broken.
+
+### Detailed
+
+The full v3.2 panel: every measure with its raw value, its empirical rank and
+its σ, market mechanics with a plain-English sentence beside the state name,
+every feed's freshness, and the merged event list. 53 rows at defaults.
+
 ```
 BTC 4H MARKET RADAR
-
-RECENT EVENTS                     last 5 confirmed events, with age
-  now   OI 24H extreme expansion 99.4p (+4.71%)
-  4h    OI 24H unusual expansion 98.3p (+3.32%)
-  8h    Short liquidation spike 98.9p
-
-WHAT CHANGED                      NEW / NORMALIZED / CHANGED, vs the last close
+RECENT EVENTS                     merged by subject, in attention priority
+  8h    OI 4H unusual expansion 92.7p (+1.11%)  — repeated 4x over 8h
+  now   Participation: relative perp surge 1.7p
+WHAT CHANGED                      only when something did
 CURRENT ANOMALIES: N              ranked by percentile extremeness, impulses *
-
-MARKET MECHANICS                  price 24H × OI 24H, plus description
-TREND / VOLATILITY                persistent regime
+MARKET MECHANICS                  price 24H × OI 24H, state + English sentence
+  PRICE UP + POSITION BUILD
+  Price rose while open interest rose. Positions were added to during the rise.
+TREND / VOLATILITY                200D distance, ATR, 12W momentum, combined word
 DERIVATIVES                       OI 24H · OI 4H · funding · premium · liq
 PARTICIPATION                     spot RVOL · perp RVOL · relative
 FLOW                              estimated lower-TF delta
 SLOW CONTEXT                      ETF · SOPR
 DATA HEALTH                       every feed's freshness
-
 EVIDENCE: DESCRIPTIVE   ACTION: CONTEXT ONLY
 ```
 
-**RECENT EVENTS** holds the last five confirmed events with their age, so a
-glance answers "what did I miss". Written only on a confirmed 4H close, and
-never twice in a row for the same line.
+### Debug
 
-**WHAT CHANGED** covers the last bar only, grouped:
+Detailed plus one block that exists for inspection and nothing else: valid
+sample counts per window, feed and adapter status integers, intensity levels,
+regime codes, unrounded σ, event-buffer counters and adapter hold counts. 63
+rows worst case. A reader who has not read the source cannot use any of it,
+which is exactly why it is not in the other two modes.
+
+### Recent events: merged, prioritised, and unchanged underneath
+
+The event **buffer** is untouched — same five slots, same duplicate
+suppression, same alert stream, byte-identical to v3.2 (check 27). What changed
+is the layer that decides which stored lines get printed:
+
+- lines about the same subject merge into one row that says how long it has
+  been running: `OI 4H unusual expansion 92.7p (+1.11%) — repeated 4x over 8h`
+- a reduction and an expansion are different subjects and never merge, and
+  neither does "returned to normal" — collapsing that one would make the panel
+  claim a reduction is still running
+- rows come out in attention priority, so a dead feed cannot be pushed off the
+  panel by a volume blip
+
+**WHAT CHANGED** covers the last bar only, grouped, and the whole section is
+absent when nothing changed:
 
 ```
 NEW:          OI 24H entered unusual expansion
@@ -480,8 +586,33 @@ REGIME and CONTEXT transitions only. An impulse has no previous state to have
 changed from, so listing one here would report noise as a transition. Fires on
 **15.3%** of bars.
 
-Worst case — 9 anomalies, 5 events, all four adapters live — uses **55 of 64**
-allocated table rows, and every cell write is bounds-guarded.
+Worst case — Debug mode, 9 anomalies, 5 events, all four adapters live — uses
+**65 of 76** allocated table rows, and every cell write is bounds-guarded.
+
+### The chart warning label is off by default
+
+v3.2 pinned a paragraph to the last bar's high with `style_label_left`, which
+on a default top-right dashboard sat on top of the panel and stayed there for
+as long as the condition held. Every warning it carried now has a permanent
+home in the panel — `SETUP REQUIRED` and the DATA issue list in Decision, DATA
+HEALTH in Detailed — so the label is redundant by construction. It is kept as
+an opt-in, shortened to a single clause under 90 characters, drawn at
+`size.tiny` and anchored **below** the bar.
+
+### A risk budget was specified, built, and rejected
+
+A mechanical volatility-scaling rule —
+`clamp(median(rvol30, 2190) / rvol30, 0.25, 1.0)` — was implemented and put
+through a pre-registered retrospective risk-control validation with seven
+adoption gates fixed before the first run. **Six passed. G1 failed: the
+coefficient of variation of rolling 24H realised volatility improved 3.2%
+against a required 10%.** The pre-registration said all seven, so the module is
+not in `main.pine`.
+
+The full result, including the falsification control that proves the metric
+measures stability rather than smaller size, is in
+[`audit/risk-budget-validation.mjs`](./audit/risk-budget-validation.mjs). It is
+kept as the record of a negative result and re-runs standalone.
 
 ### Evidence levels
 
@@ -629,13 +760,14 @@ cd ../btc-4h-regime-engine/data && node fetch.mjs    # ~2,200 daily OI files, on
 cd ../../btc-4h-market-intelligence
 
 npm install
-npm test                             # 27 checks, 1500 bars
+npm test                             # 32 checks, 1500 bars
 node tests.mjs 6000                  # same suite, longer window
 
 node audit/extract-states.mjs        # run the frozen indicator over 13,164 bars
 node audit/hysteresis-verify.mjs     # flicker and latency
 node audit/smoothing-audit.mjs       # REGIME vs IMPULSE decision
 node audit/oi4h-deseasonalization.mjs   # same-slot normalisation, rejected
+node audit/risk-budget-validation.mjs   # volatility scaling, rejected (6 of 7 gates)
 node audit/event-log.mjs             # prospective log, from the freeze forward
 ```
 
@@ -660,7 +792,7 @@ node audit/event-log.mjs             # prospective log, from the freeze forward
 | 14 | **market mechanics** | both axes carry the sign of their own raw 24h change; all four states occur |
 | 15 | **recent events** | buffer never exceeds 5, equals min(5, accepted pushes), never decreases, no adjacent duplicates |
 | 16 | alert structure | one `alert()` call site, inside `fire()`; all 20 `fire()` calls inside the confirmed block; no message repeats on consecutive bars |
-| 17 | **table capacity** | worst case uses 55 of 64 rows; all 14 sections render in priority order with no prescriptive label |
+| 17 | **table capacity** | Debug-mode worst case uses 65 of 76 rows; all 14 sections render in priority order with no prescriptive label, and WHAT CHANGED appears exactly when something changed |
 | 18 | z-scores | rolling z-scores are actually standardised |
 | 19 | **premium definition** | perp premium correlates with realised funding at **r = 0.63** (0.75 on the 24h mean) — as it must, since Binance derives funding from the premium index |
 | 20 | **cohort integrity** | changing any of {schema, freeze, indicator hash, config hash, threshold version} produces a different cohort and refuses the merge; all four routing branches covered |
@@ -669,7 +801,12 @@ node audit/event-log.mjs             # prospective log, from the freeze forward
 | 23 | **freshness vocabularies do not mix** | adapter rows never say FRESH, timestamped rows never say ACTIVE, and a deliberately constant *live* feed is shown reading LIKELY STALE — the heuristic's false positive, demonstrated not hidden |
 | 24 | **adapter unit contracts** | two funding plots 100× apart with their units correctly declared canonicalise to the identical rate and the identical z; declaring the *wrong* unit moves the printed rate by exactly 100×; a daily-shaped ETF plot summed as increments comes out exactly 6× too large |
 | 25 | **ETF trading-day semantics** | under the na-gated contract the total is exactly the last five observations across weekends and a holiday, and two consecutive sessions reporting the same value still count twice; the forward-filled mode is shown to differ, which is why it is labelled CAL-DAY |
-| 26 | **percentile vs σ disagreement** | measured, not assumed: 21.3% of readings, and 1.46% in the "rare but NORMAL" case that looks like a bug |
+| 26 | **percentile vs σ disagreement** | measured, not assumed: 20.9% of readings, and 1.08% in the "rare but NORMAL" case that looks like a bug |
+| 27 | **UI differential vs frozen v3.2** | all 61 measured outputs — features, states, anomaly flags, event log — bit-identical to `audit/main-v3.2-baseline.pine` (sha256 `0919af37…`) on every bar with adapters off *and* all four live, and all 861 alerts identical in message, bar and frequency. `t_rowsUsed` is the only excluded hook, because the row count is what the refactor changed on purpose |
+| 28 | **display mode reaches nothing** | all 56 measured outputs identical across Decision, Detailed and Debug, while the panel height differs 11 / 53 / 63 |
+| 29 | **Decision view** | six real scenarios — quiet market, one anomaly, several, adapters off, adapter misconfigured, core data failure — at most 11 rows normally and 13 worst case, with no σ, no percentile, no sample count, no research vocabulary and no prescriptive label in any of them |
+| 30 | **event display merging** | same-subject lines merge into one row that states the span, no subject appears twice, and rows come out in attention-priority order — all on top of a buffer check 27 proves unchanged |
+| 31 | **chart label cannot cover the panel** | off by default, anchored below the bar at `size.tiny`, every message a single clause under 90 characters, and every condition it reports also present in the dashboard |
 
 The suite also asserts the harness's spot and reference series are genuinely
 different. PineTS strips exchange prefixes, so a chart symbol of `BTCUSDT`

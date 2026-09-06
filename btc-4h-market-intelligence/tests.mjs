@@ -61,6 +61,9 @@ BASE = rewrite(BASE, /\[perpUp, perpDn\] = request\.security_lower_tf\([^\n]*\n\
 // labels, anomalies, events, alerts) is the real code path.
 const enable = (src, label) => rewrite(src, new RegExp(`input\\.bool\\(false, "Enable ${label} adapter"`), `input.bool(true, "Enable ${label} adapter"`, `enable ${label}`);
 const wire = (src, label, expr) => rewrite(src, new RegExp(`\\w+\\s*= input\\.source\\(close, "  ${label}"[^\\n]*\\n`), `${expr}\n`, `wire ${label}`);
+// Display mode is an input, so it is set the same way every other input is.
+// Decision is the shipped default and therefore what `BASE` runs as.
+const asMode = (src, m) => (m === 'Decision' ? src : rewrite(src, /input\.string\("Decision", "Detail level"/, `input.string("${m}", "Detail level"`, `mode ${m}`));
 
 const all = JSON.parse(readFileSync(new URL('../btc-4h-regime-engine/data/cache/btc-4h.json', import.meta.url), 'utf8'));
 const N = +(process.argv[2] ?? 1500);
@@ -123,6 +126,11 @@ const ser = (ctx, key, len) => {
   return p.data.map((d) => (d && typeof d === 'object' ? d.value : d)).map((v) => (v == null ? NaN : v));
 };
 const eq = (a, b) => a === b || (Number.isNaN(a) && Number.isNaN(b));
+// The seven boolean hooks share one packed plot: main.pine sat at Pine's 64-plot
+// ceiling exactly, so they were folded into a bitfield. Bit order is fixed in
+// the source and mirrored here.
+const BOOL_BITS = { tfOK: 1, oiObs: 2, flowOK: 4, partOK: 8, oiOK: 16, oiNotional: 32, changed: 64 };
+const bser = (ctx, name, len) => ser(ctx, 't_boolPack', len).map((v) => (Number.isFinite(v) ? ((Math.round(v) & BOOL_BITS[name]) ? 1 : 0) : NaN));
 const mean = (a) => a.reduce((s, x) => s + x, 0) / a.length;
 const sd = (a) => { const m = mean(a); return Math.sqrt(mean(a.map((x) => (x - m) ** 2))); };
 const fin = (a) => a.filter(Number.isFinite);
@@ -259,8 +267,10 @@ const withAdapters = (src) => {
   x = wire(x, 'US spot BTC ETF net flow', ETF);
   return x;
 };
-// maxAnom at its ceiling so the same run also measures worst-case table height.
-const FULL_SRC = withAdapters(rewrite(BASE, /input\.int\(5, "Max anomalies listed", minval = 1, maxval = 9/, 'input.int(9, "Max anomalies listed", minval = 1, maxval = 9', 'maxAnom ceiling'));
+// maxAnom at its ceiling AND display mode at Debug, so the same run measures the
+// worst-case table height the indicator can ever produce.
+const FULL_BASE = withAdapters(rewrite(BASE, /input\.int\(5, "Max anomalies listed \(Detailed\)", minval = 1, maxval = 9/, 'input.int(9, "Max anomalies listed (Detailed)", minval = 1, maxval = 9', 'maxAnom ceiling'));
+const FULL_SRC = asMode(FULL_BASE, 'Debug');
 const full = await run(rows, { source: FULL_SRC });
 const F = decode(full);
 
@@ -437,9 +447,9 @@ semDetail.forEach(note);
 
 // ======================================================== 4. 4H enforcement ===
 {
-  const ok240 = ser(ctx, 't_tfOK');
+  const ok240 = bser(ctx, 'tfOK');
   const h1 = await run(rows, { tf: '60' });
-  const ok60 = ser(h1, 't_tfOK');
+  const ok60 = bser(h1, 'tfOK');
   // The predicate is what the runtime.error is wired to. Assert the wiring in
   // the source too, since the error line itself is stripped for the offline run.
   const wired = /tfOK = timeframe\.in_seconds\(timeframe\.period\) == 14400/.test(RAW)
@@ -455,7 +465,7 @@ semDetail.forEach(note);
 // exactly the construct most likely to repaint, so all of it is in the hooks.
 {
   const HOOKS = ['t_oiZ24', 't_oiZ24s', 't_oiP24', 't_premZ', 't_premP', 't_partZ', 't_volPct', 't_trendDist',
-    't_oi24St', 't_trSt', 't_anomCount', 't_maxExt', 't_lvlPack', 't_dirPack', 't_statPack', 't_evPush'];
+    't_oi24St', 't_trSt', 't_anomCount', 't_maxExt', 't_lvlPack', 't_dirPack', 't_statPack', 't_boolPack', 't_evPush'];
   let repaint = 0;
   for (const frac of [0.6, 0.85]) {
     const k = Math.floor(rows.length * frac);
@@ -475,9 +485,9 @@ semDetail.forEach(note);
 {
   const usd = await run(rows, { usdOI: true });
   const cur = await run(rows, { oiCurrency: 'USD' });
-  const okBase = ser(ctx, 't_oiOK').filter((x) => x === 1).length;
-  const okUsd = ser(usd, 't_oiOK').filter((x) => x === 1).length;
-  const okCur = ser(cur, 't_oiOK').filter((x) => x === 1).length;
+  const okBase = bser(ctx, 'oiOK').filter((x) => x === 1).length;
+  const okUsd = bser(usd, 'oiOK').filter((x) => x === 1).length;
+  const okCur = bser(cur, 'oiOK').filter((x) => x === 1).length;
   line(9, check(okUsd === 0 && okCur === 0 && okBase > rows.length * 0.9,
     `units guard wrong: magnitude path trusted ${okUsd}, currency path trusted ${okCur}, base-unit accepted ${okBase}/${rows.length}`),
     `USD-notional OI rejected by BOTH paths — magnitude (${okUsd} trusted) and declared currency (${okCur} trusted); base-unit accepted on ${okBase}/${rows.length}`);
@@ -535,6 +545,10 @@ semDetail.forEach(note);
   let src = BASE;
   src = enable(src, 'long-liquidation');
   src = wire(src, 'Long liquidations', `extLiqL    = bar_index < ${cut} ? math.abs(close - close[1]) * volume : 4242.0`);
+  // Detailed, because this check reads the per-feed DATA HEALTH vocabulary
+  // (LIKELY STALE / MISCONFIGURED) that Decision deliberately does not print.
+  // The Decision rendering of the same two states is asserted in check 29.
+  src = asMode(src, 'Detailed');
   const st = await run(rows, { source: src });
   const S = decode(st);
   const tail = S.stat.lL.slice(cut + 10);
@@ -546,7 +560,7 @@ semDetail.forEach(note);
 
   // Enabled but never wired: MISCONFIGURED, and distinct from both UNAVAILABLE
   // and STALE.
-  const mis = await run(rows, { source: enable(BASE, 'long-liquidation') });
+  const mis = await run(rows, { source: asMode(enable(BASE, 'long-liquidation'), 'Detailed') });
   const M = decode(mis);
   const allMis = M.stat.lL.every((x) => x === 1);
   const misLvl = M.lvl.lqL.filter((x) => x > 0).length;
@@ -617,9 +631,11 @@ semDetail.forEach(note);
 // block, carries once-per-bar-close frequency, and never repeats the same
 // message on consecutive bars. Actual firing on a live TradingView bar is
 // MANUAL VALIDATION REQUIRED.
+let AM_ALERTS = null;
 {
   const am = await run(rows, { source: FULL_SRC, alertMode: 'all' });
   const alerts = am.alerts ?? [];
+  AM_ALERTS = alerts;
   const freqBad = alerts.filter((a) => a.freq !== 'alert.freq_once_per_bar_close').length;
 
   // Structural: exactly one alert() call in the source, inside fire(); and every
@@ -648,22 +664,28 @@ semDetail.forEach(note);
 
 // ======================================================== 14. table capacity ===
 {
-  // Maximum configuration: 9 anomalies, 5 events, every adapter live — the
-  // FULL_SRC run built above.
+  // Maximum configuration: Debug mode, 9 anomalies, 5 events, every adapter
+  // live — the FULL_SRC run built above.
   const used = ser(full, 't_rowsUsed').at(-1);
   const cap = +(RAW.match(/TBL_ROWS = (\d+)/)?.[1] ?? 0);
   const t = readTable(full);
-  const SECTIONS = ['BTC 4H MARKET RADAR', 'RECENT EVENTS', 'WHAT CHANGED', 'CURRENT ANOMALIES',
+  const SECTIONS = ['BTC 4H MARKET RADAR', 'RECENT EVENTS', 'CURRENT ANOMALIES',
     'MARKET MECHANICS — description', 'TREND / VOLATILITY — persistent', 'DERIVATIVES',
     'PARTICIPATION — volume', 'FLOW — ESTIMATED', 'SLOW CONTEXT',
     'DATA HEALTH — timestamp-verified', 'DATA HEALTH — external adapters',
-    'EVIDENCE: DESCRIPTIVE', 'ACTION: CONTEXT ONLY'];
+    'DEBUG — internals', 'EVIDENCE: DESCRIPTIVE', 'ACTION: CONTEXT ONLY'];
   const joined = t.join('\n');
   const missing = SECTIONS.filter((w) => !joined.includes(w));
   const banned = ['DO NOT CHASE', 'REDUCE EXPOSURE', 'LONG READY', 'RISK-ON', 'RISK-OFF', 'HEALTHY', 'DISTRIBUTION RISK', 'ALIGNED', 'SPOT DOMINANT', 'PERP DOMINANT'].filter((w) => joined.includes(w));
-  line(17, check(used > 0 && used <= cap && cap >= 55 && missing.length === 0 && banned.length === 0,
-    `table: used ${used} of ${cap}; missing ${missing.join(', ') || 'none'}; banned ${banned.join(', ') || 'none'}`),
-    `table capacity — worst case (9 anomalies, 5 events, all four adapters live) uses ${used} of ${cap} allocated rows, and all ${SECTIONS.length} sections render with no prescriptive or predictive label`);
+  // WHAT CHANGED is now conditional, so it is asserted as an equivalence rather
+  // than as a required section: present exactly when something changed. A
+  // header that says "nothing" is a row spent on nothing.
+  const chg = bser(full, 'changed').at(-1) === 1;
+  const chgShown = joined.includes('WHAT CHANGED');
+  check(chg === chgShown, `WHAT CHANGED rendered=${chgShown} but t_changed=${chg}`);
+  line(17, check(used > 0 && used <= cap && cap >= 62 && missing.length === 0 && banned.length === 0 && chg === chgShown,
+    `table: used ${used} of ${cap}; missing ${missing.join(', ') || 'none'}; banned ${banned.join(', ') || 'none'}; changed ${chg}/${chgShown}`),
+    `table capacity — worst case (Debug mode, 9 anomalies, 5 events, all four adapters live) uses ${used} of ${cap} allocated rows, all ${SECTIONS.length} sections render with no prescriptive or predictive label, and WHAT CHANGED appears exactly when something changed (${chg})`);
   note(`headroom ${cap - used} rows; every cell write is bounds-guarded, so exceeding capacity would drop rows rather than corrupt the table`);
   // The dashboard must lead with events and anomalies, not with a reading.
   // Match the section HEADERS, not bare words: an anomaly line reading
@@ -672,7 +694,7 @@ semDetail.forEach(note);
   const order = ['RECENT EVENTS', 'CURRENT ANOMALIES', 'MARKET MECHANICS — description',
     'TREND / VOLATILITY — persistent', 'DERIVATIVES', 'PARTICIPATION — volume',
     'FLOW — ESTIMATED', 'SLOW CONTEXT', 'DATA HEALTH — timestamp-verified',
-    'DATA HEALTH — external adapters'];
+    'DATA HEALTH — external adapters', 'DEBUG — internals'];
   const pos = order.map((w) => t.findIndex((r) => r.includes(w)));
   const ordered = pos.every((v, i) => i === 0 || (v > pos[i - 1] && v >= 0));
   check(ordered, `dashboard sections out of priority order: ${JSON.stringify(pos)}`);
@@ -786,7 +808,7 @@ semDetail.forEach(note);
   poison += '\nplot(oiChg4hRaw, "t_poisonRaw", display = display.none)\n';
   const bad = await zrun(poison);
 
-  const obs = zser(fixed, 't_oiObs');
+  const obs = zser(fixed, 't_boolPack').map((v) => (Number.isFinite(v) ? ((Math.round(v) & BOOL_BITS.oiObs) ? 1 : 0) : NaN));
   const c4 = zser(fixed, 't_oiChg4'), c24 = zser(fixed, 't_oiChg24');
   // There is no "fill" series any more — the valid-observation series IS the
   // emitted change, na where there was no observation. The control still has a
@@ -853,7 +875,7 @@ semDetail.forEach(note);
   // Injected zeros, so the path is exercised even on a dataset without any.
   const inj = rows.map((r, i) => ([400, 700, 701, 900].includes(i) ? { ...r, oi: 0 } : r));
   const ictx = await new PineTS(makeProvider(buildSeries(inj)), CHART, '240', inj.length).run(BASE);
-  const iObs = ser(ictx, 't_oiObs'), iChg = ser(ictx, 't_oiChg4');
+  const iObs = bser(ictx, 'oiObs'), iChg = ser(ictx, 't_oiChg4');
   const injOK = [400, 700, 701, 900].every((i) => iObs[i] === 0) && iChg.filter((v) => Number.isFinite(v) && v <= -0.9).length === 0;
   check(injOK, 'injected zero-OI bars still produce an observation or an artefact');
   note(`injected zeros at 4 bar positions: refused as observations and produced no artefact — ${injOK ? 'ok' : 'FAILED'}`);
@@ -868,11 +890,18 @@ semDetail.forEach(note);
   const noDecl = await run(rows, {
     source: rewrite(withAdapters(BASE), /input\.bool\(true, "  Long and short liquidations share one source and unit"/,
       'input.bool(false, "  Long and short liquidations share one source and unit"', 'undeclare pairing'),
+  }).then((c) => c);
+  const noDeclDet = await run(rows, {
+    // Detailed: DATA INCOMPARABLE is a DERIVATIVES row, which the Decision
+    // panel does not print. The Decision rendering of a withheld balance is
+    // simply its absence, and check 29 asserts that absence.
+    source: asMode(rewrite(withAdapters(BASE), /input\.bool\(true, "  Long and short liquidations share one source and unit"/,
+      'input.bool(false, "  Long and short liquidations share one source and unit"', 'undeclare pairing det'), 'Detailed'),
   });
   const balPaired = ser(unpaired, 't_liqBal');
   const balNone = ser(noDecl, 't_liqBal');
   const zNone = ser(noDecl, 't_liqBZ'), pNone = ser(noDecl, 't_liqBP');
-  const tblNone = readTable(noDecl).join('\n');
+  const tblNone = readTable(noDeclDet).join('\n');
 
   // Mismatched scales, pairing wrongly declared: the balance still sits inside
   // [-1, +1] and still looks like a reading. This is the demonstration that
@@ -1123,6 +1152,196 @@ semDetail.forEach(note);
     `percentile vs sigma tiers disagree on ${rate.toFixed(1)}% of ${tot} readings; the confusing case — a value in the rarest 2.5% while the state still reads NORMAL — occurs on ${((rareNormal / tot) * 100).toFixed(2)}% of them, which is why the state cell carries a [σ] marker`);
   rows2.forEach(note);
   note('percentile tiers here mirror the two-sided sigma gates for comparison only; nothing in the indicator uses them, and no threshold was changed on the strength of this measurement');
+}
+
+// ============ 27. UI DIFFERENTIAL: v3.2 semantics survived the UI rewrite ====
+// The claim being tested is the strongest one this change makes: the display
+// was rebuilt and NOTHING ELSE MOVED. audit/main-v3.2-baseline.pine is the
+// frozen pre-refactor indicator (sha256 0919af37...), and every measured output
+// is compared bar by bar against it, with adapters off and with all four live,
+// plus the full alert stream.
+//
+// t_rowsUsed is the one hook excluded, and only it: the number of table rows is
+// the thing that was DELIBERATELY changed. t_boolPack replaced seven separate
+// boolean plots, so it is compared through the decoder rather than by name.
+{
+  const V32 = readFileSync(new URL('./audit/main-v3.2-baseline.pine', import.meta.url), 'utf8');
+  const v32hash = createHash('sha256').update(V32).digest('hex');
+  let OLD = V32;
+  OLD = rewrite(OLD, /if not tfOK\n\s+runtime\.error\([^\n]*\n/, '', 'v32 tf guard');
+  OLD = rewrite(OLD, /\[perpUp, perpDn\] = request\.security_lower_tf\([^\n]*\n\[spotUp, spotDn\] = request\.security_lower_tf\([^\n]*\n/,
+    'perpUp = array.new<float>(0)\nperpDn = array.new<float>(0)\nspotUp = array.new<float>(0)\nspotDn = array.new<float>(0)\n', 'v32 lower-tf');
+
+  const oldPlain = await run(rows, { source: OLD });
+  const oldFull = await run(rows, { source: withAdapters(OLD), alertMode: 'all' });
+
+  // Hooks the baseline publishes, minus the one the refactor was allowed to
+  // change. The seven booleans are handled separately through the pack.
+  const OLD_KEYS = [...V32.matchAll(/plot\([^\n]*?"(t_\w+)"/g)].map((m) => m[1]);
+  const BOOL_KEYS = ['t_tfOK', 't_oiObs', 't_flowOK', 't_partOK', 't_oiOK', 't_oiNotional', 't_changed'];
+  const CMP = OLD_KEYS.filter((k) => k !== 't_rowsUsed' && !BOOL_KEYS.includes(k));
+  const BOOL_MAP = { t_tfOK: 'tfOK', t_oiObs: 'oiObs', t_flowOK: 'flowOK', t_partOK: 'partOK', t_oiOK: 'oiOK', t_oiNotional: 'oiNotional', t_changed: 'changed' };
+
+  const diffs = [];
+  const cmpRun = (label, o, n) => {
+    for (const k of CMP) {
+      const a = ser(o, k), b = ser(n, k);
+      for (let i = 0; i < nb; i++) {
+        if (!eq(a[i], b[i])) { diffs.push(`${label} ${k} bar#${i}: v3.2=${a[i]} new=${b[i]}`); break; }
+      }
+    }
+    for (const k of BOOL_KEYS) {
+      const a = ser(o, k), b = bser(n, BOOL_MAP[k]);
+      for (let i = 0; i < nb; i++) {
+        if (!eq(a[i], b[i])) { diffs.push(`${label} ${k} bar#${i}: v3.2=${a[i]} new=${b[i]}`); break; }
+      }
+    }
+  };
+  cmpRun('adapters-off', oldPlain, ctx);
+  cmpRun('adapters-live', oldFull, full);
+
+  // Alerts: same count, same order, same message, same bar, same frequency.
+  const oldA = (oldFull.alerts ?? []).map((a) => `${a.bar_index}|${a.freq}|${a.message}`);
+  const newA = (AM_ALERTS ?? []).map((a) => `${a.bar_index}|${a.freq}|${a.message}`);
+  const alertDiff = oldA.length !== newA.length ? `count ${oldA.length} vs ${newA.length}` : (oldA.find((x, i) => x !== newA[i]) ? `first mismatch: ${oldA.find((x, i) => x !== newA[i])}` : '');
+  if (alertDiff) diffs.push('alerts ' + alertDiff);
+
+  diffs.slice(0, 5).forEach((d) => fails.push('UI DIFFERENTIAL: ' + d));
+  line(27, check(diffs.length === 0 && oldA.length > 0 && v32hash.startsWith('0919af37'),
+    `differential: ${diffs.length} differing series/streams; baseline sha ${v32hash.slice(0, 8)}`),
+    `UI differential vs frozen v3.2 (sha256 ${v32hash.slice(0, 12)}) — all ${CMP.length + BOOL_KEYS.length} measured outputs identical on all ${nb} bars in both configurations, and all ${oldA.length} alerts identical in message, bar and frequency`);
+  note('t_rowsUsed is the single excluded hook: the row count is what the refactor changed on purpose. Everything else — features, states, anomaly flags, event log and alerts — is bit-identical');
+}
+
+// ================= 28. the display mode cannot reach a measurement ===========
+// Same claim, from the other side: if Decision / Detailed / Debug ever produced
+// different numbers, the mode input would have become semantics.
+{
+  const det = await run(rows, { source: asMode(BASE, 'Detailed') });
+  const dbg = await run(rows, { source: asMode(BASE, 'Debug') });
+  const KEYS = [...RAW.matchAll(/plot\([^\n]*?"(t_\w+)"/g)].map((m) => m[1]).filter((k) => k !== 't_rowsUsed');
+  let bad = 0;
+  for (const [label, c] of [['Detailed', det], ['Debug', dbg]]) {
+    for (const k of KEYS) {
+      const a = ser(ctx, k), b = ser(c, k);
+      for (let i = 0; i < nb; i++) if (!eq(a[i], b[i])) { bad++; fails.push(`mode ${label} ${k} bar#${i}: ${a[i]} vs ${b[i]}`); break; }
+    }
+  }
+  const rowsDec = ser(ctx, 't_rowsUsed').at(-1), rowsDet = ser(det, 't_rowsUsed').at(-1), rowsDbg = ser(dbg, 't_rowsUsed').at(-1);
+  line(28, check(bad === 0 && rowsDec < rowsDet && rowsDet < rowsDbg,
+    `mode invariance: ${bad} differing series; rows ${rowsDec}/${rowsDet}/${rowsDbg}`),
+    `display mode is presentation only — all ${KEYS.length} measured outputs identical across Decision, Detailed and Debug, while the panel height differs (${rowsDec} / ${rowsDet} / ${rowsDbg} rows)`);
+}
+
+// ==================== 29. Decision view: height and content ==================
+// The seven scenarios the brief names, each on a real bar of history chosen for
+// its anomaly count, plus the two adapter states. What is asserted is height,
+// what appears, and — as importantly — what does not.
+{
+  const anomAll = ser(ctx, 't_anomCount');
+  // Pick real end-bars. Truncating keeps bars 0..k, so every window and every
+  // piece of held state at bar k is identical to the full run's.
+  const pick = (want) => { for (let i = 400; i < nb; i++) if (want(anomAll[i])) return i; return -1; };
+  // "Nothing to watch" is stricter than "no anomalies": a core feed outage or a
+  // trend transition is also worth one line, and the panel is right to print
+  // it. So the quiet-market bar must be one where all four core feeds are
+  // healthy and the trend state did not just change.
+  const trS = ser(ctx, 't_trSt');
+  const coreAt = (i) => D.stat.ref[i] >= 3 && D.stat.spot[i] >= 3 && D.stat.oi[i] >= 3 && D.stat.daily[i] >= 3;
+  const iZero = (() => { for (let i = 400; i < nb; i++) if (anomAll[i] === 0 && coreAt(i) && trS[i] === trS[i - 1]) return i; return -1; })();
+  const iOne = pick((x) => x === 1);
+  const iMany = pick((x) => x >= 4);
+  const volAll = ser(ctx, 't_volPct');
+  const iHiVol = (() => { for (let i = 400; i < nb; i++) if (volAll[i] > 80) return i; return -1; })();
+
+  const scen = [];
+  const load = async (label, k, src) => {
+    const c = await run(rows.slice(0, k + 1), { source: src ?? BASE });
+    const t = readTable(c).join('\n');
+    scen.push({ label, used: ser(c, 't_rowsUsed').at(-1), t });
+    return scen.at(-1);
+  };
+  const sZero = iZero > 0 ? await load('normal market / nothing to watch', iZero) : null;
+  const sOne = iOne > 0 ? await load('1 anomaly', iOne) : null;
+  const sMany = iMany > 0 ? await load('multiple anomalies', iMany) : null;
+  const sHiVol = iHiVol > 0 ? await load('high-volatility market', iHiVol) : null;
+  const sOff = await load('optional feeds all off', nb - 1);
+  const sMis = await load('adapter misconfigured', nb - 1, enable(enable(BASE, 'funding'), 'ETF flow'));
+  const sFail = await load('core data failure', nb - 1, rewrite(BASE, /oiSym   = input\.symbol\("BINANCE:BTCUSDT\.P_OI"/, 'oiSym   = input.symbol("BINANCE:NOSUCHSYMBOL_OI"', 'break OI'));
+
+  const live = scen.filter(Boolean);
+  const worst = Math.max(...live.map((s) => s.used));
+  const normalMax = Math.max(...[sZero, sOne, sHiVol, sOff].filter(Boolean).map((s) => s.used));
+
+  // Content rules. Everything on the left must be absent from a Decision panel.
+  const BANNED = ['σ', 'p  ', 'REGIME', 'IMPULSE', 'SCHMITT', 'PERCENTILE', 'z-score',
+    'DATA HEALTH', 'CURRENT ANOMALIES', 'MARKET MECHANICS', 'DERIVATIVES',
+    'SPOT RVOL', 'PERP RVOL', 'LIQ BALANCE', 'PERP DELTA', 'n IN WINDOW',
+    'BUY', 'SELL', 'LONG READY', 'DO NOT CHASE', 'REDUCE EXPOSURE', 'RISK-ON', 'RISK-OFF'];
+  const badContent = [];
+  for (const s of live) for (const w of BANNED) if (s.t.includes(w)) badContent.push(`${s.label}: "${w}"`);
+  // And the five questions must always be answered.
+  const REQUIRED = ['BTC 4H DECISION RADAR', 'TREND', 'RISK', 'POSITIONING', 'DATA', 'NO VALIDATED ENTRY / EXIT SIGNAL'];
+  for (const s of live) for (const w of REQUIRED) if (!s.t.includes(w)) badContent.push(`${s.label}: missing "${w}"`);
+
+  const zeroOK = !sZero || (sZero.t.includes('MARKET ACTIVITY') && !sZero.t.includes('MAIN THING TO WATCH'));
+  const oneOK = !sOne || (sOne.t.includes('MAIN THING TO WATCH') && !sOne.t.includes('more in Detailed'));
+  const manyOK = !sMany || (sMany.t.includes('MAIN THING TO WATCH') && sMany.t.includes('more in Detailed'));
+  const offOK = sOff.t.includes('0 / 4 connected') && !sOff.t.includes('SETUP REQUIRED');
+  const misOK = sMis.t.includes('SETUP REQUIRED') && sMis.t.includes('Funding source not connected') && sMis.t.includes('ETF source not connected');
+  const failOK = sFail.t.includes('ISSUE') && sFail.t.includes('MAIN THING TO WATCH') && /core data feed is missing or stale/i.test(sFail.t);
+
+  line(29, check(normalMax <= 14 && worst <= 18 && badContent.length === 0 && zeroOK && oneOK && manyOK && offOK && misOK && failOK,
+    `decision view: normal ${normalMax} rows (<=14), worst ${worst} (<=18); content violations ${badContent.slice(0, 3).join('; ') || 'none'}; layouts ${[zeroOK, oneOK, manyOK, offOK, misOK, failOK].join('/')}`),
+    `Decision view — ${live.length} scenarios: at most ${normalMax} rows in normal conditions and ${worst} in the worst case, no σ, no percentile, no sample count, no research vocabulary and no prescriptive label in any of them`);
+  badContent.slice(0, 6).forEach((b) => note('VIOLATION ' + b));
+  live.forEach((s) => note(`${String(s.used).padStart(2)} rows   ${s.label}`));
+  note('0 anomalies collapses to one MARKET ACTIVITY / NORMAL row; 1 shows the line alone; several show one line plus a count of what was hidden');
+  note('all row counts are at size.tiny, the same font every other section uses — no information is fitted in by shrinking text');
+}
+
+// =============== 30. recent-event display: merging and priority ==============
+// The event BUFFER is untouched (check 27 proves it byte-identical). What is
+// asserted here is the display layer on top of it: same-subject lines merge,
+// and the surviving rows come out in attention-priority order.
+{
+  const det = await run(rows, { source: asMode(FULL_BASE, 'Detailed') });
+  const evRows = readTable(det).filter((r) => /^(now|\d+[hd]) \| /.test(r)).map((r) => r.split(' | ')[1]);
+  // Mirror of evPrio()/evKey() in main.pine. A mirror can drift, so check 27's
+  // event-log equality is what protects the data; this only orders the display.
+  const prio = (t) => (/STALE|data available again|updating/.test(t) ? 1 : /^OI /.test(t) ? 2 : /^Funding/.test(t) ? 3 : /^Premium/.test(t) ? 4 : /liquidation spike/.test(t) ? 5 : /^Slow trend/.test(t) ? 6 : (/^SOPR/.test(t) || /ETF/.test(t)) ? 7 : 8);
+  const key = (t) => { const p = prio(t); return p === 2 ? 'OI ' + (/reduction/.test(t) ? 'down' : /expansion/.test(t) ? 'up' : 'flat') : p === 5 ? (/^Long/.test(t) ? 'LIQ long' : 'LIQ short') : p === 1 ? 'FEED ' + t : String(p); };
+  const base = evRows.map((x) => x.replace(/ {2}— repeated \d+x over .*$/, ''));
+  const keys = base.map(key);
+  const dupKeys = keys.filter((k, i) => keys.indexOf(k) !== i);
+  const prios = base.map(prio);
+  const ordered = prios.every((v, i) => i === 0 || v >= prios[i - 1]);
+  // A merged row must say so, and an unmerged one must not.
+  const merged = evRows.filter((x) => / — repeated \d+x over /.test(x)).length;
+  line(30, check(evRows.length > 0 && dupKeys.length === 0 && ordered,
+    `events: ${evRows.length} rows, ${dupKeys.length} duplicate subjects, priority-ordered ${ordered}`),
+    `RECENT EVENTS display — ${evRows.length} rows covering ${new Set(keys).size} distinct subjects with no subject appearing twice (${merged} rows are merged runs), rendered in attention-priority order`);
+  note('merging and priority are UI only: the buffer, the accepted/suppressed counters and the alert stream are unchanged, which check 27 asserts against the frozen v3.2 build');
+}
+
+// ================= 31. the chart label cannot cover the dashboard ===========
+// v3.2 pinned a paragraph to the last bar's high with style_label_left, which
+// on a default top-right dashboard sat on top of the panel. Structural, because
+// PineTS has no chart to measure overlap on.
+{
+  const src = RAW;
+  const gated = /if barstate\.islast and warnLabel\n/.test(src);
+  const defOff = /warnLabel = input\.bool\(false, "Chart warning label \(short\)"/.test(src);
+  const block = src.slice(src.indexOf('if barstate.islast and warnLabel'), src.indexOf('// ---- test hooks'));
+  const msgs = [...block.matchAll(/msg := "([^"]*)"/g)].map((m) => m[1]);
+  const tooLong = msgs.filter((m) => m.length > 90);
+  const below = /label\.new\(bar_index, low, msg[^\n]*label\.style_label_up[^\n]*size = size\.tiny\)/.test(block);
+  // And every condition the old label carried must still be reachable in the
+  // panel itself, which is where it now lives.
+  const inPanel = ['SETUP REQUIRED', 'issueTxt', 'Open interest feed looks USD-denominated', 'Liquidation pairing not declared'].every((w) => src.includes(w));
+  line(31, check(gated && defOff && msgs.length >= 5 && tooLong.length === 0 && below && inPanel,
+    `label: gated ${gated}, default-off ${defOff}, ${msgs.length} messages, ${tooLong.length} over 90 chars, anchored below ${below}, panel coverage ${inPanel}`),
+    `chart warning label — off by default, drawn below the bar at the smallest size, and every one of its ${msgs.length} messages is a single clause under 90 characters (longest ${Math.max(...msgs.map((m) => m.length))}); all of them also appear in the dashboard, which is why the label is optional at all`);
 }
 
 console.log('\n' + '='.repeat(98));

@@ -4,6 +4,82 @@ Paste-ready release notes for TradingView. Newest first.
 
 ---
 
+## v3.3 — Decision view
+
+A presentation change, and one rejected feature. **`THRESHOLD-VERSION` is
+unchanged at v3.2**: no threshold, window, state definition, event definition or
+alert moved. The indicator hash changed, which correctly started a new
+prospective cohort; the previous one is retired to
+`audit/event-log-v3.2ui-legacy.json` with zero events recorded.
+
+### Added
+
+- **Three display modes — Decision (default), Detailed, Debug.** Decision is
+  the product: ten to fourteen rows answering what state the market is in
+  (TREND), whether volatility is higher than usual (RISK), what open interest is
+  doing (POSITIONING), the single highest-priority thing to look at (MAIN THING
+  TO WATCH), and whether the data is healthy (DATA). No z-score, no percentile,
+  no sample count, no per-feed freshness, no research vocabulary. Detailed is
+  the old panel; Debug adds sample counts, status integers and unrounded σ.
+- **TREND in five words** — STRONG UP / UP / MIXED / DOWN / STRONG DOWN, a
+  deterministic sum of the existing 200D Schmitt state and the sign of 12-week
+  momentum. No new threshold and no predictive claim.
+- **MAIN THING TO WATCH** — one line, chosen by attention priority (core data
+  failure → OI → funding → premium → liquidations → trend transition → ETF/SOPR
+  → participation), ties broken on percentile extremeness. A display ordering
+  only; `CURRENT ANOMALIES` still ranks by percentile extremeness.
+- **Plain-English market mechanics** in Detailed, beside the state name:
+  *"Price rose while open interest fell. Positions were reduced during the
+  rise."*
+- **Event display merging.** Lines about the same subject collapse into one row
+  that states the span — `OI 4H unusual expansion 92.7p (+1.11%) — repeated 4x
+  over 8h` — and rows come out in attention priority, so a dead feed cannot be
+  pushed off the panel by a volume blip. The buffer, the counters and the alert
+  stream are untouched.
+
+### Changed
+
+- **The chart warning label is off by default**, one clause under 90 characters
+  when on, drawn at `size.tiny` below the bar. v3.2's version was a paragraph
+  pinned to the last bar's high, directly on top of a top-right dashboard.
+  Everything it said now lives in the panel: SETUP REQUIRED and the DATA issue
+  list in Decision, DATA HEALTH in Detailed.
+- **`WHAT CHANGED` is absent when nothing changed** instead of printing a header
+  that says so.
+- **Core is now four feeds, not five** — reference, spot, open interest and the
+  daily 200MA. SOPR is a Glassnode symbol not every plan resolves, nothing in
+  TREND, RISK or POSITIONING reads it, and letting it turn Core red reported a
+  working indicator as broken. It is still shown, as context.
+- Table capacity 64 → 76 rows; the seven boolean test hooks were packed into one
+  plot, because the file had reached Pine's 64-plot ceiling exactly.
+
+### Rejected, and not shipped
+
+- **A volatility-scaling risk budget.** Specified as
+  `clamp(median(rvol30, 2190) / rvol30, 0.25, 1.0)`, implemented, and put
+  through a pre-registered retrospective risk-control validation with seven
+  adoption gates fixed before the first run. Six passed — 7D realised-volatility
+  dispersion −15.1%, worst 7D volatility −26.4%, 99th-percentile adverse 24H
+  move 0.0707 vs 0.0800, average exposure 0.90, turnover 0.009, and a
+  falsification control confirming the metric measures stability rather than
+  smaller size. **G1 failed: 24H realised-volatility dispersion improved 3.2%
+  against a required 10%.** The pre-registration said all seven, so the module
+  is not in `main.pine`. `audit/risk-budget-validation.mjs` is kept as the
+  record and re-runs standalone.
+
+### Verification
+
+- **UI differential (check 27).** All 61 measured outputs bit-identical to the
+  frozen `audit/main-v3.2-baseline.pine` (sha256 `0919af37…`) on every bar, with
+  adapters off *and* with all four live, and all 861 alerts identical in
+  message, bar and frequency. `t_rowsUsed` is the only excluded hook.
+- **Mode invariance (check 28).** All 56 measured outputs identical across
+  Decision, Detailed and Debug; only the panel height differs (11 / 53 / 63).
+- Checks 29–31 cover the Decision view's height and content across six real
+  scenarios, event merging and priority, and the chart label.
+
+---
+
 ## v3.2 — three statistical / semantic fixes
 
 No new features. Threshold version bumped to v3.2, which correctly forced a new

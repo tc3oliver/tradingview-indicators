@@ -15,7 +15,7 @@ A1 A2 A3 A4 A5 A6   compiles, runs on 4H, refuses every other timeframe,
                     and completes inside the execution-time budget
 B1 B2 B3 B4 B5 B6 B7 symbols resolve, OI is base-unit, chart-independence holds
 C1                   lower-timeframe flow returns intrabars at all
-E1                   dashboard renders in priority order
+E1 E1b E1c E1d       all three display modes render, and Decision fits 1080p
 E4                   RECENT EVENTS does not grow mid-bar
 E6                   alerts fire on the close and only on the close
 ```
@@ -34,7 +34,7 @@ Until the core list is complete this is a script under validation, not a tool.
 
 ---
 
-`npm test` proves 27 things offline. It cannot prove anything that only exists
+`npm test` proves 32 things offline. It cannot prove anything that only exists
 inside TradingView: whether a symbol resolves, how far its history goes, whether
 `request.security_lower_tf()` returns intrabars, whether the `input.source()`
 picker can even see another indicator's plot, what the table looks like, or
@@ -105,7 +105,7 @@ pointed at another indicator's plot.
 | # | Check | Expected | Result |
 |---|---|---|---|
 | D1 | Leave all four adapters off | DATA HEALTH shows Funding / ETF flow / Liquidations = **UNAVAILABLE**; no funding, ETF or liquidation anomaly ever appears | ☐ |
-| D2 | Enable the funding adapter, leave its Source on `close` | Reads **MISCONFIGURED** (not STALE, not UNAVAILABLE), and the orange chart warning appears | ☐ |
+| D2 | Enable the funding adapter, leave its Source on `close` | Decision shows **SETUP REQUIRED / Funding source not connected**; Detailed's DATA HEALTH reads **MISCONFIGURED** (not STALE, not UNAVAILABLE). The chart label is off by default — turn on "Chart warning label (short)" to check it appears *below* the bar and does not cover the panel | ☐ |
 | D3 | Open the Source dropdown | **Do TradingView's own Fundamentals → Derivatives studies appear as selectable plots?** Record the answer — the docs say a source input can receive "the values plotted by other scripts" but also warn "not all indicators can be calculated based on another indicator" | ☐ |
 | D4 | If D3 is no: add a community script that republishes aggregated funding and point the input at its plot | Funding row shows a raw rate, a percentile and a σ | ☐ |
 | D5 | Same for ETF net flow | ETF 5D row shows a compact notional and a percentile | ☐ |
@@ -126,7 +126,10 @@ what is manual is whether a real plot arrives through the picker at all.
 
 | # | Check | Expected | Result |
 |---|---|---|---|
-| E1 | Dashboard at default settings | Sections in order: RECENT EVENTS · WHAT CHANGED · CURRENT ANOMALIES · MARKET MECHANICS · TREND/VOLATILITY · DERIVATIVES · PARTICIPATION · FLOW · SLOW CONTEXT · DATA HEALTH (timestamp-verified) · DATA HEALTH (external adapters) | ☐ |
+| E1 | Dashboard at default settings (**Decision**) | Ten to fourteen rows: title · TREND · RISK · POSITIONING · MAIN THING TO WATCH (or MARKET ACTIVITY / NORMAL) · DATA · DESCRIPTIVE MARKET DATA. No σ, no percentile, no per-feed freshness | ☐ |
+| E1b | Set Detail level = **Detailed** | Sections in order: RECENT EVENTS · WHAT CHANGED (only if something changed) · CURRENT ANOMALIES · MARKET MECHANICS · TREND/VOLATILITY · DERIVATIVES · PARTICIPATION · FLOW · SLOW CONTEXT · DATA HEALTH (timestamp-verified) · DATA HEALTH (external adapters) | ☐ |
+| E1c | Set Detail level = **Debug** | Everything in Detailed plus a DEBUG block. Confirm the panel still fits the pane | ☐ |
+| E1d | **Panel height at 1080p, Decision mode** | The panel occupies well under half the chart height at `size.tiny`, and every row is readable without zooming | ☐ |
 | E2 | Set **Max anomalies = 9**, all adapters live, wait for a busy bar | Nothing is clipped; the footer rows still render. Offline worst case measured 51 of 64 rows | ☐ |
 | E3 | Try each of the five table positions | No overlap with the price scale or the legend | ☐ |
 | E4 | Watch a live 4H bar form | RECENT EVENTS does **not** gain a row mid-bar; new rows appear only at the close | ☐ |

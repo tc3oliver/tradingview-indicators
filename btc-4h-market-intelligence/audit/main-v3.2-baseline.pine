@@ -15,29 +15,14 @@ indicator("BTC 4H Market Radar", overlay = true, max_bars_back = 2500)
 //
 // A monitor, not a forecaster. It watches open interest, funding, perpetual
 // premium, spot-vs-perp participation, liquidations, ETF flow and SOPR,
-// normalises each against its own recent history, and — in ten to fourteen
-// rows of plain English — tells you:
+// normalises each against its own recent history, and tells you:
 //
-//   1. what state the market is in         (TREND)
-//   2. whether volatility is higher than usual (RISK)
-//   3. the one thing worth looking at      (MAIN THING TO WATCH)
-//   4. whether the data can be trusted     (DATA)
+//   1. what has HAPPENED recently          (RECENT EVENTS)
+//   2. what is UNUSUAL right now           (CURRENT ANOMALIES)
+//   3. what price and positioning are doing together (MARKET MECHANICS)
+//   4. which feeds you can actually trust  (DATA HEALTH)
 //
 // It does not tell you what will happen next, because it cannot.
-//
-// THREE DISPLAY MODES, AND THE MODE IS PRESENTATION ONLY.
-//   Decision  the default and the product. Nothing normal is printed. No
-//             z-score, no percentile, no sample count, no research vocabulary.
-//   Detailed  every measure with its raw value, empirical rank and σ, every
-//             feed's freshness, the full event list.
-//   Debug     Detailed plus sample counts, status integers and unrounded σ.
-// Every measured output is bit-identical in all three, asserted bar by bar in
-// tests.mjs check 28, and identical to the pre-rewrite v3.2 build in check 27.
-//
-// ZERO CONFIGURATION FOR THE CORE. The four feeds every reading depends on —
-// reference perpetual, spot, base-unit open interest, confirmed daily 200MA —
-// are default symbols. All four external adapters are off by default and none
-// of them blocks anything.
 //
 // TWO INDEPENDENT AXES, NEVER MIXED  (the v3 correctness rule)
 //   RAW VALUE decides WHAT HAPPENED.   oiChg24h < 0 is a REDUCTION. Always.
@@ -78,16 +63,6 @@ indicator("BTC 4H Market Radar", overlay = true, max_bars_back = 2500)
 // Earlier work also falsified open-interest direction, top-trader positioning,
 // market structure as a gate, and derivatives as a risk flag. See
 // audit/AUDIT.md and ../btc-4h-regime-engine/RESEARCH-LOG.md.
-//
-// WHY THERE IS NO POSITION SIZE EITHER
-// A mechanical volatility-scaling risk budget —
-// clamp(median(rvol30, 2190) / rvol30, 0.25, 1.0) — was specified, implemented
-// here, and put through a pre-registered retrospective risk-control validation
-// with seven adoption gates fixed before the first run. Six passed. G1 failed:
-// the dispersion of rolling 24H realised volatility improved 3.2% against a
-// required 10%. The pre-registration said all seven, so the module was removed
-// rather than re-tuned. audit/risk-budget-validation.mjs keeps the record and
-// re-runs standalone.
 //
 // HYSTERESIS is used for readability only. It stops a level flickering across a
 // threshold; it is not claimed to improve any decision.
@@ -171,22 +146,9 @@ soprExit  = input.float(0.01, "SOPR exit (dev from 1)",  minval = 0.001, step = 
 
 G_UI = "Display"
 showTable = input.bool(true, "Dashboard", group = G_UI)
-// DISPLAY MODE IS PRESENTATION AND NOTHING ELSE. It selects which rows are
-// drawn. It does not reach a measurement, a threshold, a state definition, an
-// event, an alert or the prospective cohort — every t_* output is bit-identical
-// in all three modes, which tests.mjs asserts bar by bar.
-dispMode  = input.string("Decision", "Detail level", options = ["Decision", "Detailed", "Debug"], group = G_UI, tooltip = "Decision: ten to fourteen rows answering five questions — what state is the market in, is risk higher than usual, how much size does that justify, what is the one thing worth looking at, and is the data healthy. No z-scores, no percentiles, no normal readings.\n\nDetailed: every measure with its raw value, percentile and σ, every feed's freshness, and the full event list.\n\nDebug: Detailed plus sample counts, exact σ, status codes and internal state codes.")
-maxAnom   = input.int(5, "Max anomalies listed (Detailed)", minval = 1, maxval = 9, group = G_UI, tooltip = "Decision always shows exactly one — the highest-priority anomaly.")
-maxEvents = input.int(5, "Recent events listed (Detailed)", minval = 3, maxval = 5, group = G_UI)
+maxAnom   = input.int(5, "Max anomalies listed", minval = 1, maxval = 9, group = G_UI)
+maxEvents = input.int(5, "Recent events listed", minval = 3, maxval = 5, group = G_UI)
 tblPos    = input.string("Top right", "Position", options = ["Top right", "Middle right", "Bottom right", "Top left", "Bottom left"], group = G_UI)
-// The v3.2 chart label was a paragraph pinned to the last bar's high — directly
-// on top of a top-right dashboard. Every warning it carried is now a row in the
-// panel itself, so the label is off by default and one short line when on.
-warnLabel = input.bool(false, "Chart warning label (short)", group = G_UI, tooltip = "Off by default. Everything it would say already appears under SETUP REQUIRED / DATA in the dashboard; the label existed only because v2 had nowhere else to put it.")
-
-modeDecision = dispMode == "Decision"
-modeDebug    = dispMode == "Debug"
-
 
 // ------------------------------------------------------ 2. data requests ----
 // `int(time)` rides along in every tuple. request.security carries the last
@@ -880,49 +842,6 @@ liqLLbl  = not liqLOK ? adaptWord(lLStat) : liqPhrase(lqLLvl, "LONG") + SIG
 liqSLbl  = not liqSOK ? adaptWord(lSStat) : liqPhrase(lqSLvl, "SHORT") + SIG
 liqBLbl  = not liqOK ? "DATA UNAVAILABLE" : not liqPaired ? "DATA INCOMPARABLE" : lqBDir > 0 ? "MORE LONG LIQUIDATIONS" : lqBDir < 0 ? "MORE SHORT LIQUIDATIONS" : "BALANCED"
 
-// ----------------------------------- 9b. Decision vocabulary (display only) --
-// PLAIN ENGLISH FOR THE DECISION PANEL, AND NOTHING ELSE.
-//
-// Every sentence below is a DETERMINISTIC TRANSLATION of a state that already
-// exists above. Nothing is recomputed, no threshold is read, no new measurement
-// is introduced, and no phrase can exist unless its research-vocabulary twin
-// exists first — the two are two renderings of one state, not two states.
-//
-// A reader should not have to know what a Schmitt trigger, a σ ladder, an
-// impulse or a percentile disagreement is in order to use this panel. Those
-// words are correct, and they belong in Detailed and Debug.
-
-// --- TREND, in five words ---
-// A deterministic sum of two price-derived states the script already computes:
-// where price sits relative to the confirmed daily 200MA (trSt, a Schmitt state
-// in ATR units) and the sign of 12-week momentum. Both are descriptions of the
-// past. STRONG UP means "above the 200D AND up over twelve weeks" and means
-// nothing else — in particular it is NOT a forecast, and the audit that deleted
-// the action layer found no direction-consistent edge in any trend state.
-trendScore = (trSt > 0 ? 1 : trSt < 0 ? -1 : 0) + (na(dMom12w) ? 0 : dMom12w > 0 ? 1 : dMom12w < 0 ? -1 : 0)
-kTrendWord = not dailyOK or na(dMom12w) ? "NO DATA" : trendScore >= 2 ? "STRONG UP" : trendScore == 1 ? "UP" : trendScore == 0 ? "MIXED" : trendScore == -1 ? "DOWN" : "STRONG DOWN"
-
-// --- POSITIONING, from the OI 24H ladder ---
-// NORMAL covers the whole unengaged band. There is no separate "OI BUILDING"
-// tier because producing one would need a new threshold on the raw 24H change,
-// and inventing a threshold is exactly what this revision is not allowed to do.
-kPosWord = not oiOK ? "NO DATA" : oi24Lvl == 0 ? "NORMAL" : (oi24Lvl >= 2 ? "EXTREME " : "UNUSUAL ") + (oi24Dir > 0 ? "BUILD" : oi24Dir < 0 ? "REDUCTION" : "FLAT")
-
-
-// --- one sentence per anomaly, for MAIN THING TO WATCH ---
-// Descriptions of what has already happened. None of them says what follows,
-// because nothing in six years of audited history supports saying it.
-sInt(lvl)       => lvl >= 2 ? "Extreme" : "Unusual"
-sOi(lvl, dir, w)  => sInt(lvl) + " open interest " + (dir > 0 ? "increase" : dir < 0 ? "reduction" : "move") + " over the last " + w + "."
-sFund(lvl, dir) => "Funding is " + (lvl >= 2 ? "extremely " : "unusually ") + (dir > 0 ? "positive — longs are paying shorts." : dir < 0 ? "negative — shorts are paying longs." : "flat.")
-sPrem(lvl, dir) => "Perpetual is trading at " + (lvl >= 2 ? "an extreme " : "an unusual ") + (dir > 0 ? "premium to spot." : dir < 0 ? "discount to spot." : "level against spot.")
-sPart(dir)      => (dir > 0 ? "Spot" : "Perpetual") + " activity spike relative to the other venue."
-sRvol(dir, w)   => w + " volume is unusually " + (dir > 0 ? "high" : "low") + " for this time of day."
-sLiq(side)      => "Large " + side + "-liquidation spike detected."
-sEtf(lvl, dir)  => sInt(lvl) + " ETF net " + (dir > 0 ? "inflow." : dir < 0 ? "outflow." : "flow.")
-sSopr(st)       => st > 0 ? "SOPR is above 1 — coins are being sold at a profit." : "SOPR is below 1 — coins are being sold at a loss."
-
-
 // =========================================================== 10. anomalies ===
 // A measurement is anomalous when its intensity ladder is engaged. Ranked by
 // PERCENTILE EXTREMENESS — how far into either tail of its own empirical
@@ -931,55 +850,33 @@ var array<string> aName = array.new_string(0)
 var array<float>  aExt  = array.new_float(0)
 var array<float>  aZ    = array.new_float(0)
 var array<float>  aPct  = array.new_float(0)
-// Two DISPLAY-ONLY columns, pushed by the same call so they can never drift out
-// of step with the measurement they describe: the plain-English sentence the
-// Decision panel prints, and the ATTENTION PRIORITY used to pick which single
-// anomaly it prints.
-//
-// Attention priority is a READABILITY ordering, not a significance claim. It
-// says that when several things are unusual at once and there is room for one
-// line, a broken feed outranks an extreme funding rate which outranks a volume
-// blip. It does not say that any of them predicts anything, and it is not the
-// ordering CURRENT ANOMALIES uses — that one is percentile extremeness, which
-// is a property of the data rather than of the reader.
-//   1 core data failure  2 extreme/unusual OI   3 funding   4 premium
-//   5 liquidation spike  6 trend transition     7 ETF / SOPR
-//   8 participation / RVOL
-var array<string> aSent = array.new_string(0)
-var array<float>  aPrio = array.new_float(0)
 array.clear(aName)
 array.clear(aExt)
 array.clear(aZ)
 array.clear(aPct)
-array.clear(aSent)
-array.clear(aPrio)
 
-addAnom(name, prio, sentence, engaged, phrase, p, z) =>
+addAnom(name, engaged, phrase, p, z) =>
     if engaged and not na(z)
         array.push(aName, name + " " + phrase)
         array.push(aExt, na(p) ? 50.0 + math.min(math.abs(z) * 10.0, 49.0) : extOf(p))
         array.push(aZ, z)
         array.push(aPct, na(p) ? na : p)
-        array.push(aSent, sentence)
-        // Priority dominates; percentile extremeness breaks ties within a
-        // priority, so the more unusual of two OI readings wins.
-        array.push(aPrio, prio * 1000.0 - (na(p) ? 50.0 : extOf(p)))
 
 // Regimes and impulses both belong here — the radar answers "what is unusual
 // right now", and an instantaneous spike is unusual right now. The distinction
 // lives in WHAT CHANGED, which reports regime transitions only.
 // A trailing * marks an IMPULSE: this bar, not a regime.
-addAnom("OI 24H",      2, sOi(oi24Lvl, oi24Dir, "24 hours"), oi24Lvl != 0, oiPhrase(oi24Lvl, oi24Dir), oiP24,  oiZ24)
-addAnom("OI 4H *",     2, sOi(oi4Lvl, oi4Dir, "4 hours"),    oi4Lvl != 0,  oiPhrase(oi4Lvl, oi4Dir),   oiP4,   oiZ4)
-addAnom("FUNDING",     3, sFund(fdLvl, fdDir),               fdLvl != 0,   fundPhrase(fdLvl, fdDir),   fundP,  fundZ)
-addAnom("PREMIUM *",   4, sPrem(pmLvl, pmDir),               pmLvl != 0,   premPhrase(pmLvl, pmDir),   premP,  premZ)
-addAnom("PARTICIP *",  8, sPart(ptDir),                      ptLvl != 0,   partPhrase(ptLvl, ptDir),   partP,  partZ)
-addAnom("SPOT RVOL *", 8, sRvol(rsDir, "Spot"),              rsLvl != 0,   rvolPhrase(rsLvl, rsDir),   rvolSpotP, rvolSpotZ)
-addAnom("PERP RVOL *", 8, sRvol(rpDir, "Perpetual"),         rpLvl != 0,   rvolPhrase(rpLvl, rpDir),   rvolPerpP, rvolPerpZ)
-addAnom("LONG LIQ *",  5, sLiq("long"),                      lqLLvl != 0,  liqPhrase(lqLLvl, "LONG"),  liqLP, liqLZ)
-addAnom("SHORT LIQ *", 5, sLiq("short"),                     lqSLvl != 0,  liqPhrase(lqSLvl, "SHORT"), liqSP, liqSZ)
-addAnom(etfRowLbl,     7, sEtf(etLvl, etDir),                etLvl != 0,   etfPhrase(etLvl, etDir),    etfP,   etfZ)
-addAnom("SOPR",        7, sSopr(spSt),                       spSt != 0,    soprPhrase(spSt),   soprP,  soprDev)
+addAnom("OI 24H",      oi24Lvl != 0, oiPhrase(oi24Lvl, oi24Dir), oiP24,  oiZ24)
+addAnom("OI 4H *",     oi4Lvl != 0,  oiPhrase(oi4Lvl, oi4Dir),   oiP4,   oiZ4)
+addAnom("FUNDING",     fdLvl != 0,   fundPhrase(fdLvl, fdDir),   fundP,  fundZ)
+addAnom("PREMIUM *",   pmLvl != 0,   premPhrase(pmLvl, pmDir),   premP,  premZ)
+addAnom("PARTICIP *",  ptLvl != 0,   partPhrase(ptLvl, ptDir),   partP,  partZ)
+addAnom("SPOT RVOL *", rsLvl != 0,   rvolPhrase(rsLvl, rsDir),   rvolSpotP, rvolSpotZ)
+addAnom("PERP RVOL *", rpLvl != 0,   rvolPhrase(rpLvl, rpDir),   rvolPerpP, rvolPerpZ)
+addAnom("LONG LIQ *",  lqLLvl != 0,  liqPhrase(lqLLvl, "LONG"),  liqLP, liqLZ)
+addAnom("SHORT LIQ *", lqSLvl != 0,  liqPhrase(lqSLvl, "SHORT"), liqSP, liqSZ)
+addAnom(etfRowLbl,     etLvl != 0,   etfPhrase(etLvl, etDir),    etfP,   etfZ)
+addAnom("SOPR",        spSt != 0,    soprPhrase(spSt),   soprP,  soprDev)
 
 anomCount = array.size(aName)
 
@@ -996,15 +893,8 @@ mechOK  = refOK and oiOK and not na(px24) and not na(oiChg24h)
 mechPx  = dirOf(px24)
 mechOi  = dirOf(oiChg24h)
 mechLbl = not mechOK ? "INSUFFICIENT DATA" : mechPx == 0 or mechOi == 0 ? "FLAT" : mechPx > 0 and mechOi > 0 ? "PRICE UP + POSITION BUILD" : mechPx > 0 and mechOi < 0 ? "PRICE UP + POSITION REDUCTION" : mechPx < 0 and mechOi > 0 ? "PRICE DOWN + POSITION BUILD" : "PRICE DOWN + POSITION REDUCTION"
-// The same fact as mechLbl, written as English. "PRICE UP + POSITION REDUCTION"
-// is a state name; this is what it means, in words a reader does not have to
-// decode. Both sentences are pure description — what price did, what open
-// interest did — and neither says whether that is good or bad, because the
-// audit found no direction-consistent edge in any of the four combinations.
-mechSent = not mechOK or mechPx == 0 or mechOi == 0 ? "" : (mechPx > 0 ? "Price rose" : "Price fell") + " while open interest " + (mechOi > 0 ? "rose" : "fell") + ". Positions were " + (mechOi > 0 ? "added to" : "reduced") + " during the " + (mechPx > 0 ? "rise" : "fall") + "."
-
 // Attached description, never converted into an implication.
-mechNote =(fundOK ? "funding " + (fdDir > 0 ? "positive" : fdDir < 0 ? "negative" : "flat") + (fdLvl > 0 ? " (" + str.lower(fundWord(fdLvl)) + ")" : "") : "funding n/a") + " · " + (na(premium) ? "premium n/a" : "premium " + (pmDir > 0 ? "positive" : pmDir < 0 ? "negative" : "flat") + (pmLvl > 0 ? " (" + str.lower(intWord(pmLvl)) + ")" : "")) + " · " + (na(rvolPerpZ) ? "perp RVOL n/a" : "perp RVOL " + (rpLvl > 0 and rpDir > 0 ? "high" : rpLvl > 0 and rpDir < 0 ? "low" : "normal"))
+mechNote = (fundOK ? "funding " + (fdDir > 0 ? "positive" : fdDir < 0 ? "negative" : "flat") + (fdLvl > 0 ? " (" + str.lower(fundWord(fdLvl)) + ")" : "") : "funding n/a") + " · " + (na(premium) ? "premium n/a" : "premium " + (pmDir > 0 ? "positive" : pmDir < 0 ? "negative" : "flat") + (pmLvl > 0 ? " (" + str.lower(intWord(pmLvl)) + ")" : "")) + " · " + (na(rvolPerpZ) ? "perp RVOL n/a" : "perp RVOL " + (rpLvl > 0 and rpDir > 0 ? "high" : rpLvl > 0 and rpDir < 0 ? "low" : "normal"))
 
 // ======================================================= 12. what changed ====
 // Compared with the last CONFIRMED bar, so a forming bar shows a provisional
@@ -1158,114 +1048,28 @@ ageStr(t0) =>
     h = math.round((time - t0) / 3600000.0)
     h < 1 ? "now" : h < 48 ? str.tostring(h, "#") + "h" : str.tostring(h / 24.0, "#") + "d"
 
-// ------------------------- 13b. event DISPLAY priority and merging (UI only) --
-// This layer READS the event buffer and never writes it. The buffer, the
-// alerts, the accepted/suppressed counters and the prospective event log are
-// byte-identical to v3.2 — what changes is only which of the five stored lines
-// the panel has room to show first, and whether three lines about the same
-// thing are printed as three rows or as one.
-//
-// Ranking order, most important first. It is a READABILITY order, not a
-// significance claim: nothing here says a funding event matters more to a
-// forecast than an RVOL impulse, only that when five events compete for three
-// rows, a dead feed must not be pushed off the panel by a volume blip.
-//   1 feed / data failure   2 open interest      3 funding       4 premium
-//   5 liquidation spike     6 trend transition   7 ETF or SOPR   8 participation / RVOL
-evPrio(t) =>
-    str.contains(t, "STALE") or str.contains(t, "data available again") or str.contains(t, "updating") ? 1 : str.startswith(t, "OI ") ? 2 : str.startswith(t, "Funding") ? 3 : str.startswith(t, "Premium") ? 4 : str.contains(t, "liquidation spike") ? 5 : str.startswith(t, "Slow trend") ? 6 : str.startswith(t, "SOPR") or str.contains(t, "ETF") ? 7 : 8
-
-// The grouping key is what a line is ABOUT. Three OI reduction lines four hours
-// apart are one ongoing reduction, and printing them as three rows spends the
-// whole panel saying one thing. A reduction and an expansion are NOT the same
-// subject and never merge; neither does "returned to normal", which is a third
-// key, because collapsing it into the reduction would make the panel claim the
-// reduction is still running.
-evKey(t) =>
-    p = evPrio(t)
-    p == 2 ? "OI " + (str.contains(t, "reduction") ? "down" : str.contains(t, "expansion") ? "up" : "flat") : p == 5 ? (str.startswith(t, "Long") ? "LIQ long" : "LIQ short") : p == 1 ? "FEED " + t : str.tostring(p)
-
-// The newest line of the group, plus how long the group has been running. The
-// age shown is the OLDEST member's, so "repeated 3x over 12h" is literally true
-// of the buffer contents.
-evLine(txt, cnt, oldT) =>
-    cnt <= 1 ? txt : txt + "  — repeated " + str.tostring(cnt) + "x over " + ageStr(oldT)
-
-// ------------------------- 13c. compact data-health summary (display only) ---
-// Decision does not list a feed that is working. It states whether the core is
-// intact, how many optional adapters are connected, and then lists — in full,
-// never truncated — everything that is not.
-//
-// CORE IS THE FOUR FEEDS EVERY READING DEPENDS ON, and no more: the reference
-// perpetual, spot, base-unit open interest, and the confirmed daily 200MA.
-// All four are default symbols requiring zero configuration, which is what
-// makes "Core OK" a statement about the product rather than about the user's
-// setup. SOPR is deliberately NOT core — it is a Glassnode symbol that not
-// every plan resolves, nothing in TREND, RISK, RISK BUDGET or POSITIONING
-// reads it, and letting it turn Core red would mean reporting a working
-// indicator as broken.
-coreOK  = refStat >= 3 and spotStat >= 3 and oiStat >= 3 and dailyStat >= 3
-nAdOn   = (useFunding ? 1 : 0) + (useEtf ? 1 : 0) + (useLiqL ? 1 : 0) + (useLiqS ? 1 : 0)
-nAdConn = (fundOK ? 1 : 0) + (etfOK ? 1 : 0) + (liqLOK ? 1 : 0) + (liqSOK ? 1 : 0)
-
-// MISCONFIGURED is the one adapter state the user can fix in ten seconds, so it
-// gets its own heading rather than a line in a list of complaints.
-setupTxt = (fdStat == 1 ? "  Funding source not connected\n" : "") + (etStat == 1 ? "  ETF source not connected\n" : "") + (lLStat == 1 ? "  Long liquidation source not connected\n" : "") + (lSStat == 1 ? "  Short liquidation source not connected\n" : "")
-
-// ------------------------ 13d. MAIN THING TO WATCH (display only) -----------
-// One line. Chosen by attention priority, not by percentile — the Decision
-// panel has room for one thing and it should be the thing a reader would most
-// regret not being told.
-//
-// A trend transition is not an anomaly (a regime CHANGE is not an unusual
-// VALUE) so it is not in the anomaly arrays and must not be: pushing it there
-// would change anomCount, which is a measured output the test suite asserts
-// against the engaged ladders. It competes here instead, at priority 6.
-trWatch = kTr == 0 or not dailyOK ? "" : "Trend state changed to " + kTrendWord + " — price moved relative to the 200-day average."
-
-string mainSent = ""
-color  mainCol  = color.new(color.orange, 30)
-if not coreOK or oiLooksNotional
-    mainSent := oiLooksNotional ? "Open interest feed looks USD-denominated. Positioning readings are switched off — point the OI input at a base-unit symbol." : "A core data feed is missing or stale. Readings from it are suppressed — see DATA."
-    mainCol  := color.new(color.red, 30)
-else
-    float  bestP = 99000.0
-    string bestS = ""
-    if anomCount > 0
-        bi = array.sort_indices(aPrio, order.ascending)
-        bestP := array.get(aPrio, array.get(bi, 0))
-        bestS := array.get(aSent, array.get(bi, 0))
-    // 5900 is priority 6's worst possible key (6 * 1000 - 100). Anything
-    // numerically above it lost to the trend transition.
-    if str.length(trWatch) > 0 and bestP > 5900.0
-        bestS := trWatch
-    mainSent := bestS
-
-issueTxt = (oiLooksNotional ? "  ⚠ Open interest feed looks USD-denominated — OI readings off\n" : "") + (refStat < 3 ? "  ⚠ Reference price " + str.lower(statWord(refStat)) + "\n" : "") + (spotStat < 3 ? "  ⚠ Spot price " + str.lower(statWord(spotStat)) + "\n" : "") + (oiStat < 3 and not oiLooksNotional ? "  ⚠ Open interest " + str.lower(statWord(oiStat)) + "\n" : "") + (dailyStat < 3 ? "  ⚠ Daily 200MA " + str.lower(statWordD(dailyStat)) + "\n" : "") + (soprStat < 3 ? "  · SOPR context feed " + str.lower(statWordD(soprStat)) + " — not required by any core reading\n" : "") + (fdStat == 2 ? "  ⚠ Funding source may be stale\n" : "") + (etStat == 2 ? "  ⚠ ETF source may be stale\n" : "") + (lLStat == 2 ? "  ⚠ Long liquidation source may be stale\n" : "") + (lSStat == 2 ? "  ⚠ Short liquidation source may be stale\n" : "") + (liqLOK and liqSOK and not liqPaired ? "  ⚠ Liquidation pairing not declared — balance withheld\n" : "")
-
 // =============================================================== 14. table ===
-// Worst case is now the DEBUG mode panel: the full Detailed layout (measured at
-// 51 rows with 9 anomalies, 5 events and every adapter live) plus the debug
-// block. Compact is bounded far below that — its own worst case is asserted
-// separately in tests.mjs. Every write is bounds-guarded, so a future section
-// cannot silently drop rows off the end; the ceiling is 100 in Pine.
-TBL_ROWS = 76
+// Worst case, every section at maximum:
+//   1 title + 1 header + 5 events + 1 header + 1 change block + 1 header
+//   + 9 anomalies + 1 header + 4 mechanics + 1 header + 2 trend/vol
+//   + 1 header + 7 derivatives + 1 header + 3 participation + 1 header
+//   + 2 flow + 1 header + 2 slow context + 2 headers + 10 data health
+//   + 1 momentum + 2 footer = 60 rows.
+// Allocated 64, and every write is bounds-guarded, so a future section cannot
+// silently drop rows off the end. tests.mjs asserts the measured maximum.
+TBL_ROWS = 64
 
 stateCol(raw) =>
     // The [σ] marker is presentation; strip it before matching so a state's
-    // colour never depends on whether it carries the marker. Uppercased so the
-    // Compact vocabulary ("Unusual reduction") and the Detailed one ("UNUSUAL
-    // REDUCTION") land on the same colour — one state, one colour, two
-    // renderings.
-    s = str.upper(str.replace_all(raw, SIG, ""))
+    // colour never depends on whether it carries the marker.
+    s = str.replace_all(raw, SIG, "")
     color c = color.new(color.gray, 40)
-    if str.contains(s, "UNAVAILABLE") or s == "INSUFFICIENT DATA" or str.contains(s, "MISCONFIGURED") or s == "NO DATA" or s == "NOT CONNECTED" or s == "NONE ENABLED" or str.contains(s, "NEEDS ~1Y")
+    if str.contains(s, "UNAVAILABLE") or s == "INSUFFICIENT DATA" or str.contains(s, "MISCONFIGURED")
         c := color.new(color.gray, 20)
-    else if str.contains(s, "STALE") or s == "DATA INCOMPARABLE" or s == "ISSUE" or s == "FEED REJECTED" or s == "SETUP REQUIRED" or s == "CHECK"
+    else if str.contains(s, "STALE") or s == "DATA INCOMPARABLE"
         c := color.new(color.red, 25)
-    else if s == "NORMAL" or s == "FRESH" or s == "ACTIVE" or s == "BALANCED" or s == "FLAT" or s == "NEAR 200D" or s == "NEAR 1" or s == "NORMAL RELATIVE ACTIVITY" or s == "OK" or s == "CONNECTED"
+    else if s == "NORMAL" or s == "FRESH" or s == "ACTIVE" or s == "BALANCED" or s == "FLAT" or s == "NEAR 200D" or s == "NEAR 1" or s == "NORMAL RELATIVE ACTIVITY"
         c := color.new(color.gray, 55)
-    else if str.endswith(s, "NORMAL SIZE") or s == "NO VALIDATED ENTRY / EXIT SIGNAL"
-        c := color.new(color.blue, 40)
     else if str.startswith(s, "EXTREME")
         c := color.new(color.orange, 15)
     else if str.startswith(s, "UNUSUAL") or str.startswith(s, "ELEVATED") or str.contains(s, "SPIKE") or str.contains(s, "SURGE")
@@ -1303,304 +1107,167 @@ if showTable and barstate.islast
     dash := table.new(pos, 3, TBL_ROWS, border_width = 1, border_color = color.new(color.gray, 70), frame_width = 1, frame_color = color.new(color.gray, 50))
 
     int r = 0
+    wideRow(dash, r, "BTC 4H MARKET RADAR", color.new(color.blue, 20), size.small)
+    r += 1
 
-    // ---- event display grouping, shared by both layouts (reads only) ----
-    // Newest first, so the surviving text of a merged group is the latest line
-    // and the recorded age is the earliest.
-    gKey  = array.new_string(0)
-    gTxt  = array.new_string(0)
-    gRank = array.new_float(0)
-    gCnt  = array.new_int(0)
-    gOld  = array.new_int(0)
+    // --- RECENT EVENTS ---
+    wideRow(dash, r, evCount > 0 ? "RECENT EVENTS" : "RECENT EVENTS — none recorded yet", color.new(color.blue, 45), size.tiny)
+    r += 1
     if evCount > 0
-        for k = 0 to evCount - 1
+        shownEv = math.min(evCount, maxEvents)
+        for k = 0 to shownEv - 1
             j = evCount - 1 - k
-            tx = array.get(evTxt, j)
-            tt = array.get(evT, j)
-            at = array.indexof(gKey, evKey(tx))
-            if at < 0
-                array.push(gKey, evKey(tx))
-                array.push(gTxt, tx)
-                // priority dominates: 1e13 is far above any millisecond
-                // timestamp, and negating the time makes the most recent group
-                // sort first WITHIN a priority. Both terms stay exact in a
-                // float64 (max ~1.2e13, well under 2^53).
-                array.push(gRank, evPrio(tx) * 1e13 - tt)
-                array.push(gCnt, 1)
-                array.push(gOld, tt)
-            else
-                array.set(gCnt, at, array.get(gCnt, at) + 1)
-                array.set(gOld, at, tt)
-    gN = array.size(gKey)
-    gIdx = array.new_int(0)
-    if gN > 0
-        gIdx := array.sort_indices(gRank, order.ascending)
-
-    // ================================================= DECISION ==============
-    // The default, and the product. It answers five questions and stops:
-    //   what state is the market in          TREND
-    //   is risk higher than usual            RISK
-    //   how much size does that justify      RISK BUDGET
-    //   what is the one thing worth looking at   MAIN THING TO WATCH
-    //   is the data healthy                  DATA
-    // Everything that is behaving normally is absent. No z-score, no
-    // percentile, no sample count, no per-feed freshness, no research
-    // vocabulary, and no entry or exit signal — there is no validated one to
-    // give, which the last row says out loud.
-    if modeDecision
-        wideRow(dash, r, "BTC 4H DECISION RADAR", color.new(color.blue, 20), size.small)
-        r += 1
-        addRow(dash, r, "TREND", "", kTrendWord)
-        r += 1
-        addRow(dash, r, "RISK", "", na(volPct) ? "NO DATA" : volPct > 80 ? "HIGH" : volPct > 55 ? "ELEVATED" : volPct < 20 ? "LOW" : "NORMAL")
-        r += 1
-        addRow(dash, r, "POSITIONING", "", kPosWord)
-        r += 1
-
-        // --- MAIN THING TO WATCH --- exactly one line, or nothing. A broken
-        // core feed outranks every reading, because a reading from a feed that
-        // is not there is the worst thing this panel could print.
-        if str.length(mainSent) > 0
-            wideRow(dash, r, "MAIN THING TO WATCH", mainCol, size.tiny)
-            r += 1
-            wideRow(dash, r, "  " + mainSent + (anomCount > 1 ? "   (+" + str.tostring(anomCount - 1) + " more in Detailed)" : ""), color.new(color.black, 60), size.tiny)
-            r += 1
-        else
-            // Nothing unusual is a result, and it takes one row to say.
-            addRow(dash, r, "MARKET ACTIVITY", "", "NORMAL")
+            if r < TBL_ROWS
+                table.cell(dash, 0, r, ageStr(array.get(evT, j)), text_color = color.new(color.white, 35), text_size = size.tiny, text_halign = text.align_left)
+                table.cell(dash, 1, r, array.get(evTxt, j), text_color = color.new(color.white, 5), text_size = size.tiny, text_halign = text.align_left)
+                table.merge_cells(dash, 1, r, 2, r)
             r += 1
 
-        // --- SETUP REQUIRED --- only when the user enabled an adapter and then
-        // did not wire it. Never for an adapter they simply left off.
-        if str.length(setupTxt) > 0
-            wideRow(dash, r, "SETUP REQUIRED", color.new(color.orange, 25), size.tiny)
-            r += 1
-            wideRow(dash, r, setupTxt, color.new(color.black, 60), size.tiny)
-            r += 1
-
-        wideRow(dash, r, "DATA", color.new(color.blue, 55), size.tiny)
-        r += 1
-        addRow(dash, r, "  Core", "", coreOK ? "OK" : "ISSUE")
-        r += 1
-        addRow(dash, r, "  Optional", str.tostring(nAdConn) + " / 4 connected", nAdOn == 0 ? "NONE ENABLED" : nAdConn == nAdOn ? "OK" : "CHECK")
-        r += 1
-        if str.length(issueTxt) > 0
-            wideRow(dash, r, issueTxt, color.new(color.black, 60), size.tiny)
-            r += 1
-
-        addRow(dash, r, "DESCRIPTIVE MARKET DATA", "", "NO VALIDATED ENTRY / EXIT SIGNAL")
+    // --- WHAT CHANGED ---
+    wideRow(dash, r, changed ? "WHAT CHANGED — since the last confirmed bar" : "WHAT CHANGED — nothing since the last bar", color.new(color.blue, 55), size.tiny)
+    r += 1
+    if changed
+        wideRow(dash, r, changes, color.new(color.black, 55), size.tiny)
         r += 1
 
-    // ============================== DETAILED and DEBUG =======================
-    // The v3.2 panel: every measure with its raw value, its empirical rank and
-    // its σ, every feed's freshness, and the full event list.
-    if not modeDecision
-        wideRow(dash, r, "BTC 4H MARKET RADAR", color.new(color.blue, 20), size.small)
-        r += 1
-
-        // --- RECENT EVENTS ---
-        if gN > 0
-            wideRow(dash, r, "RECENT EVENTS", color.new(color.blue, 45), size.tiny)
-            r += 1
-            shownEv = math.min(gN, maxEvents)
-            for k = 0 to shownEv - 1
-                g = array.get(gIdx, k)
-                if r < TBL_ROWS
-                    table.cell(dash, 0, r, ageStr(array.get(gOld, g)), text_color = color.new(color.white, 35), text_size = size.tiny, text_halign = text.align_left)
-                    table.cell(dash, 1, r, evLine(array.get(gTxt, g), array.get(gCnt, g), array.get(gOld, g)), text_color = color.new(color.white, 5), text_size = size.tiny, text_halign = text.align_left)
-                    table.merge_cells(dash, 1, r, 2, r)
-                r += 1
-
-        // --- WHAT CHANGED --- a header saying "nothing" is a row spent on
-        // nothing, so the section is simply absent when nothing changed.
-        if changed
-            wideRow(dash, r, "WHAT CHANGED — since the last confirmed bar", color.new(color.blue, 55), size.tiny)
-            r += 1
-            wideRow(dash, r, changes, color.new(color.black, 55), size.tiny)
+    // --- CURRENT ANOMALIES ---
+    wideRow(dash, r, "CURRENT ANOMALIES: " + str.tostring(anomCount), anomCount > 0 ? color.new(color.orange, 30) : color.new(color.gray, 50), size.tiny)
+    r += 1
+    if anomCount > 0
+        idx = array.sort_indices(aExt, order.descending)
+        shown = math.min(anomCount, maxAnom)
+        for k = 0 to shown - 1
+            pick = array.get(idx, k)
+            if r < TBL_ROWS
+                table.cell(dash, 0, r, array.get(aName, pick), text_color = color.new(color.white, 10), text_size = size.tiny, text_halign = text.align_left)
+                table.merge_cells(dash, 0, r, 1, r)
+                table.cell(dash, 2, r, pRank(array.get(aPct, pick)) + "  " + sgn2(array.get(aZ, pick)) + "σ", text_color = color.white, bgcolor = color.new(color.orange, 35), text_size = size.tiny, text_halign = text.align_right)
             r += 1
 
-        // --- CURRENT ANOMALIES ---
-        if anomCount > 0
-            wideRow(dash, r, "CURRENT ANOMALIES: " + str.tostring(anomCount), color.new(color.orange, 30), size.tiny)
-            r += 1
-            idx = array.sort_indices(aExt, order.descending)
-            shown = math.min(anomCount, maxAnom)
-            for k = 0 to shown - 1
-                pick = array.get(idx, k)
-                if r < TBL_ROWS
-                    table.cell(dash, 0, r, array.get(aName, pick), text_color = color.new(color.white, 10), text_size = size.tiny, text_halign = text.align_left)
-                    table.merge_cells(dash, 0, r, 1, r)
-                    table.cell(dash, 2, r, pRank(array.get(aPct, pick)) + "  " + sgn2(array.get(aZ, pick)) + "σ", text_color = color.white, bgcolor = color.new(color.orange, 35), text_size = size.tiny, text_halign = text.align_right)
-                r += 1
+    // --- MARKET MECHANICS ---
+    wideRow(dash, r, "MARKET MECHANICS — description, not implication", color.new(color.blue, 60), size.tiny)
+    r += 1
+    addRow(dash, r, "PRICE 24H", na(px24) ? "n/a" : pctS(px24), mechPx > 0 ? "UP" : mechPx < 0 ? "DOWN" : "FLAT")
+    r += 1
+    addRow(dash, r, "OI 24H", val3(pctS(oiChg24h), oiP24, oiZ24), oi24Lbl)
+    r += 1
+    wideRow(dash, r, "  " + mechLbl, color.new(color.gray, 45), size.tiny)
+    r += 1
+    wideRow(dash, r, "  " + mechNote, color.new(color.black, 70), size.tiny)
+    r += 1
 
-        // --- MARKET MECHANICS ---
-        wideRow(dash, r, "MARKET MECHANICS — description, not implication", color.new(color.blue, 60), size.tiny)
-        r += 1
-        addRow(dash, r, "PRICE 24H", na(px24) ? "n/a" : pctS(px24), mechPx > 0 ? "UP" : mechPx < 0 ? "DOWN" : "FLAT")
-        r += 1
-        addRow(dash, r, "OI 24H", val3(pctS(oiChg24h), oiP24, oiZ24), oi24Lbl)
-        r += 1
-        wideRow(dash, r, "  " + mechLbl, color.new(color.gray, 45), size.tiny)
-        r += 1
-        if str.length(mechSent) > 0
-            wideRow(dash, r, "  " + mechSent, color.new(color.black, 70), size.tiny)
-            r += 1
-        wideRow(dash, r, "  " + mechNote, color.new(color.black, 70), size.tiny)
-        r += 1
+    // --- TREND / VOLATILITY ---
+    wideRow(dash, r, "TREND / VOLATILITY — persistent regime", color.new(color.blue, 60), size.tiny)
+    r += 1
+    addRow(dash, r, "TREND", dailyOK ? sgn2(trendDist) + " ATR from 200D" : "no daily", trendLbl)
+    r += 1
+    addRow(dash, r, "VOLATILITY", "ATR " + pctS(atrPct) + "  " + pRank(volPct), volLbl)
+    r += 1
+    addRow(dash, r, "MOMENTUM 12W", na(dMom12w) ? "no daily" : pctS(dMom12w), na(dMom12w) ? "DATA UNAVAILABLE" : dMom12w > 0 ? "UP OVER 12 WEEKS" : dMom12w < 0 ? "DOWN OVER 12 WEEKS" : "FLAT")
+    r += 1
 
-        // --- TREND / VOLATILITY ---
-        wideRow(dash, r, "TREND / VOLATILITY — persistent regime", color.new(color.blue, 60), size.tiny)
-        r += 1
-        addRow(dash, r, "TREND", dailyOK ? sgn2(trendDist) + " ATR from 200D" : "no daily", trendLbl)
-        r += 1
-        addRow(dash, r, "VOLATILITY", "ATR " + pctS(atrPct) + "  " + pRank(volPct), volLbl)
-        r += 1
-        addRow(dash, r, "MOMENTUM 12W", na(dMom12w) ? "no daily" : pctS(dMom12w), na(dMom12w) ? "DATA UNAVAILABLE" : dMom12w > 0 ? "UP OVER 12 WEEKS" : dMom12w < 0 ? "DOWN OVER 12 WEEKS" : "FLAT")
-        r += 1
-        addRow(dash, r, "TREND (combined)", "200D " + (trSt > 0 ? "above" : trSt < 0 ? "below" : "near") + " + 12W " + (na(dMom12w) ? "n/a" : dMom12w > 0 ? "up" : "down"), kTrendWord)
-        r += 1
+    // --- DERIVATIVES ---
+    wideRow(dash, r, "DERIVATIVES", color.new(color.blue, 60), size.tiny)
+    r += 1
+    addRow(dash, r, "OI 24H", oiLooksNotional ? "REJECTED [" + (na(oiCur) ? "?" : oiCur) + "]" : oiOK ? val3(pctS(oiChg24h), oiP24, oiZ24) : "no OI", oi24Lbl)
+    r += 1
+    addRow(dash, r, "OI 4H *", oiOK ? val3(pctS(oiChg4h), oiP4, oiZ4) : "no OI", oi4Lbl)
+    r += 1
+    addRow(dash, r, "FUNDING", fundOK ? val3(pct4(fundRaw), fundP, fundZ) : (useFunding ? "check adapter" : "adapter off"), fundLbl)
+    r += 1
+    addRow(dash, r, "PREMIUM *", na(premium) ? "no spot/ref" : val3(pct4(premium), premP, premZ), premLbl)
+    r += 1
+    addRow(dash, r, "LONG LIQ *", liqLOK ? val3(big(extLiqL), liqLP, liqLZ) : (useLiqL ? "check adapter" : "adapter off"), liqLLbl)
+    r += 1
+    addRow(dash, r, "SHORT LIQ *", liqSOK ? val3(big(extLiqS), liqSP, liqSZ) : (useLiqS ? "check adapter" : "adapter off"), liqSLbl)
+    r += 1
+    addRow(dash, r, "LIQ BALANCE", liqBalOK ? val3(sgn2(liqBal), liqBP, liqBZ) : not liqOK ? "both sides needed" : "declare shared unit", liqBLbl)
+    r += 1
 
-        // --- DERIVATIVES ---
-        wideRow(dash, r, "DERIVATIVES", color.new(color.blue, 60), size.tiny)
-        r += 1
-        addRow(dash, r, "OI 24H", oiLooksNotional ? "REJECTED [" + (na(oiCur) ? "?" : oiCur) + "]" : oiOK ? val3(pctS(oiChg24h), oiP24, oiZ24) : "no OI", oi24Lbl)
-        r += 1
-        addRow(dash, r, "OI 4H *", oiOK ? val3(pctS(oiChg4h), oiP4, oiZ4) : "no OI", oi4Lbl)
-        r += 1
-        addRow(dash, r, "FUNDING", fundOK ? val3(pct4(fundRaw), fundP, fundZ) : (useFunding ? "check adapter" : "adapter off"), fundLbl)
-        r += 1
-        addRow(dash, r, "PREMIUM *", na(premium) ? "no spot/ref" : val3(pct4(premium), premP, premZ), premLbl)
-        r += 1
-        addRow(dash, r, "LONG LIQ *", liqLOK ? val3(big(extLiqL), liqLP, liqLZ) : (useLiqL ? "check adapter" : "adapter off"), liqLLbl)
-        r += 1
-        addRow(dash, r, "SHORT LIQ *", liqSOK ? val3(big(extLiqS), liqSP, liqSZ) : (useLiqS ? "check adapter" : "adapter off"), liqSLbl)
-        r += 1
-        addRow(dash, r, "LIQ BALANCE", liqBalOK ? val3(sgn2(liqBal), liqBP, liqBZ) : not liqOK ? "both sides needed" : "declare shared unit", liqBLbl)
-        r += 1
+    // --- PARTICIPATION ---
+    wideRow(dash, r, "PARTICIPATION — volume vs the same UTC slot on prior days", color.new(color.blue, 60), size.tiny)
+    r += 1
+    addRow(dash, r, "SPOT RVOL *", na(rvolSpot) ? "no volume" : val3(f2(rvolSpot) + "x", rvolSpotP, rvolSpotZ), rsLbl)
+    r += 1
+    addRow(dash, r, "PERP RVOL *", na(rvolPerp) ? "no volume" : val3(f2(rvolPerp) + "x", rvolPerpP, rvolPerpZ), rpLbl)
+    r += 1
+    addRow(dash, r, "RELATIVE", partOK ? val3(sgn2(partRaw), partP, partZ) : "no volume", partLbl)
+    r += 1
 
-        // --- PARTICIPATION ---
-        wideRow(dash, r, "PARTICIPATION — volume vs the same UTC slot on prior days", color.new(color.blue, 60), size.tiny)
-        r += 1
-        addRow(dash, r, "SPOT RVOL *", na(rvolSpot) ? "no volume" : val3(f2(rvolSpot) + "x", rvolSpotP, rvolSpotZ), rsLbl)
-        r += 1
-        addRow(dash, r, "PERP RVOL *", na(rvolPerp) ? "no volume" : val3(f2(rvolPerp) + "x", rvolPerpP, rvolPerpZ), rpLbl)
-        r += 1
-        addRow(dash, r, "RELATIVE", partOK ? val3(sgn2(partRaw), partP, partZ) : "no volume", partLbl)
-        r += 1
+    // --- FLOW ---
+    wideRow(dash, r, "FLOW — ESTIMATED from lower-timeframe bar direction", color.new(color.blue, 60), size.tiny)
+    r += 1
+    addRow(dash, r, "PERP DELTA", flowOK ? f2(perpDelta) : "no intrabar", flowOK ? (perpDelta > 0 ? "NET UP-BAR VOLUME" : "NET DOWN-BAR VOLUME") : "DATA UNAVAILABLE")
+    r += 1
+    addRow(dash, r, "SPOT DELTA", flowOK ? f2(spotDelta) : "no intrabar", flowOK ? (spotDelta > 0 ? "NET UP-BAR VOLUME" : "NET DOWN-BAR VOLUME") : "DATA UNAVAILABLE")
+    r += 1
 
-        // --- FLOW ---
-        wideRow(dash, r, "FLOW — ESTIMATED from lower-timeframe bar direction", color.new(color.blue, 60), size.tiny)
-        r += 1
-        addRow(dash, r, "PERP DELTA", flowOK ? f2(perpDelta) : "no intrabar", flowOK ? (perpDelta > 0 ? "NET UP-BAR VOLUME" : "NET DOWN-BAR VOLUME") : "DATA UNAVAILABLE")
-        r += 1
-        addRow(dash, r, "SPOT DELTA", flowOK ? f2(spotDelta) : "no intrabar", flowOK ? (spotDelta > 0 ? "NET UP-BAR VOLUME" : "NET DOWN-BAR VOLUME") : "DATA UNAVAILABLE")
-        r += 1
+    // --- SLOW CONTEXT ---
+    wideRow(dash, r, "SLOW CONTEXT", color.new(color.blue, 60), size.tiny)
+    r += 1
+    addRow(dash, r, etfRowLbl, etfOK ? val3(big(etf5d), etfP, etfZ) : (useEtf ? "check adapter" : "adapter off"), etfLbl)
+    r += 1
+    addRow(dash, r, "SOPR", soprOK ? val3(f2(soprD), soprP, soprDev) : "no feed", soprLbl)
+    r += 1
 
-        // --- SLOW CONTEXT ---
-        wideRow(dash, r, "SLOW CONTEXT", color.new(color.blue, 60), size.tiny)
-        r += 1
-        addRow(dash, r, etfRowLbl, etfOK ? val3(big(etf5d), etfP, etfZ) : (useEtf ? "check adapter" : "adapter off"), etfLbl)
-        r += 1
-        addRow(dash, r, "SOPR", soprOK ? val3(f2(soprD), soprP, soprDev) : "no feed", soprLbl)
-        r += 1
+    // --- DATA HEALTH, split by what can actually be measured ---
+    wideRow(dash, r, "DATA HEALTH — timestamp-verified (lag is measured)", color.new(color.blue, 60), size.tiny)
+    r += 1
+    addRow(dash, r, "Reference", refSym, statWord(refStat))
+    r += 1
+    addRow(dash, r, "Spot", spotSym, statWord(spotStat))
+    r += 1
+    addRow(dash, r, "Open interest", oiLooksNotional ? "REJECTED — looks USD" : oiSym, oiLooksNotional ? "UNAVAILABLE" : statWord(oiStat))
+    r += 1
+    addRow(dash, r, "Daily 200MA", "1D on reference", statWordD(dailyStat))
+    r += 1
+    addRow(dash, r, "SOPR", soprSym, statWordD(soprStat))
+    r += 1
+    wideRow(dash, r, "DATA HEALTH — external adapters (update activity only, no upstream timestamp)", color.new(color.blue, 60), size.tiny)
+    r += 1
+    addRow(dash, r, "Funding", useFunding ? (fundUnit) : "off", adaptWord(fdStat))
+    r += 1
+    addRow(dash, r, "ETF flow", useEtf ? (etfNaGated ? "na-gated observations" : etfDailyMode ? "daily value, calendar sample" : "per-bar increment") : "off", adaptWord(etStat))
+    r += 1
+    addRow(dash, r, "Long liquidations", useLiqL ? "adapter" : "off", adaptWord(lLStat))
+    r += 1
+    addRow(dash, r, "Short liquidations", useLiqS ? "adapter" : "off", adaptWord(lSStat))
+    r += 1
+    addRow(dash, r, "Liq pairing", liqPaired ? "declared same unit" : "not declared", liqPaired ? "BALANCE ENABLED" : "BALANCE WITHHELD")
+    r += 1
 
-        // --- DATA HEALTH, split by what can actually be measured ---
-        wideRow(dash, r, "DATA HEALTH — timestamp-verified (lag is measured)", color.new(color.blue, 60), size.tiny)
-        r += 1
-        addRow(dash, r, "Reference", refSym, statWord(refStat))
-        r += 1
-        addRow(dash, r, "Spot", spotSym, statWord(spotStat))
-        r += 1
-        addRow(dash, r, "Open interest", oiLooksNotional ? "REJECTED — looks USD" : oiSym, oiLooksNotional ? "UNAVAILABLE" : statWord(oiStat))
-        r += 1
-        addRow(dash, r, "Daily 200MA", "1D on reference", statWordD(dailyStat))
-        r += 1
-        addRow(dash, r, "SOPR", soprSym, statWordD(soprStat))
-        r += 1
-        wideRow(dash, r, "DATA HEALTH — external adapters (update activity only, no upstream timestamp)", color.new(color.blue, 60), size.tiny)
-        r += 1
-        addRow(dash, r, "Funding", useFunding ? (fundUnit) : "off", adaptWord(fdStat))
-        r += 1
-        addRow(dash, r, "ETF flow", useEtf ? (etfNaGated ? "na-gated observations" : etfDailyMode ? "daily value, calendar sample" : "per-bar increment") : "off", adaptWord(etStat))
-        r += 1
-        addRow(dash, r, "Long liquidations", useLiqL ? "adapter" : "off", adaptWord(lLStat))
-        r += 1
-        addRow(dash, r, "Short liquidations", useLiqS ? "adapter" : "off", adaptWord(lSStat))
-        r += 1
-        addRow(dash, r, "Liq pairing", liqPaired ? "declared same unit" : "not declared", liqPaired ? "BALANCE ENABLED" : "BALANCE WITHHELD")
-        r += 1
-
-        // --- DEBUG --- the internals, and only here. A number in this block
-        // means nothing to a reader who has not read the source, which is
-        // exactly why it does not appear in Compact or Detailed.
-        if modeDebug
-            wideRow(dash, r, "DEBUG — internals; not a reading", color.new(color.purple, 40), size.tiny)
-            r += 1
-            addRow(dash, r, "Valid samples", "oi4 " + str.tostring(oiN4) + " · oi24 " + str.tostring(oiN24) + " · prem " + str.tostring(premN) + " · part " + str.tostring(partN), "n IN WINDOW")
-            r += 1
-            addRow(dash, r, "Valid samples", "spotRV " + str.tostring(rvSpN) + " · perpRV " + str.tostring(rvPpN) + " · sopr " + str.tostring(soprN) + " · min " + str.tostring(minSamp), "n IN WINDOW")
-            r += 1
-            addRow(dash, r, "Feed status codes", "ref " + str.tostring(refStat) + " · spot " + str.tostring(spotStat) + " · oi " + str.tostring(oiStat) + " · daily " + str.tostring(dailyStat) + " · sopr " + str.tostring(soprStat), "0..4")
-            r += 1
-            addRow(dash, r, "Adapter status codes", "fd " + str.tostring(fdStat) + " · etf " + str.tostring(etStat) + " · liqL " + str.tostring(lLStat) + " · liqS " + str.tostring(lSStat), "0..4")
-            r += 1
-            addRow(dash, r, "Intensity levels", "oi24 " + str.tostring(oi24Lvl) + " · oi4 " + str.tostring(oi4Lvl) + " · prem " + str.tostring(pmLvl) + " · fund " + str.tostring(fdLvl) + " · etf " + str.tostring(etLvl) + " · part " + str.tostring(ptLvl), "0/1/2")
-            r += 1
-            addRow(dash, r, "Regime codes", "trSt " + str.tostring(trSt) + " · spSt " + str.tostring(spSt) + " · oi24St " + str.tostring(oi24St), "signed")
-            r += 1
-            addRow(dash, r, "Exact z", "oi24 " + sgn2(oiZ24) + " · smoothed " + sgn2(oiZ24s) + " · prem " + sgn2(premZ) + " · part " + sgn2(partZ), "σ, unrounded")
-            r += 1
-            addRow(dash, r, "Event buffer", "accepted " + str.tostring(array.get(evStat, 0)) + " · suppressed " + str.tostring(array.get(evStat, 1)) + " · held " + str.tostring(evCount) + " · display groups " + str.tostring(gN), "PROSPECTIVE LOG")
-            r += 1
-            addRow(dash, r, "Adapter held bars", "fd " + str.tostring(fdHeld) + " · etf " + str.tostring(etHeld) + " · etfObsAge " + str.tostring(etfObsAge) + " · liqL " + str.tostring(lLHeld) + " · liqS " + str.tostring(lSHeld), "UNCHANGED FOR")
-            r += 1
-
-        wideRow(dash, r, "EVIDENCE: DESCRIPTIVE   ACTION: CONTEXT ONLY", color.new(color.gray, 45), size.tiny)
-        r += 1
-        wideRow(dash, r, "Organises data. Predicts nothing. Direction from raw values, abnormality from percentiles. Flow is ESTIMATED.", color.new(color.black, 70), size.tiny)
-        r += 1
+    wideRow(dash, r, "EVIDENCE: DESCRIPTIVE   ACTION: CONTEXT ONLY", color.new(color.gray, 45), size.tiny)
+    r += 1
+    wideRow(dash, r, "Organises data. Predicts nothing. Direction from raw values, abnormality from percentiles. Flow is ESTIMATED.", color.new(color.black, 70), size.tiny)
+    r += 1
     rowsUsed := r
 
 plot(dailyOK ? dSma200 : na, "Daily 200MA (reference symbol)", color = color.new(color.orange, 30), linewidth = 2)
 
-// CHART LABEL — OFF BY DEFAULT, AND ONE SHORT LINE WHEN ON.
-//
-// v3.2 pinned a paragraph to the last bar's high with style_label_left, which
-// on a default top-right dashboard sat directly on top of the panel and stayed
-// there for as long as the condition held. Every warning it carried now has a
-// permanent home in the panel itself — SETUP REQUIRED and the DATA issue list
-// in Compact, DATA HEALTH in Detailed — so the label is redundant by
-// construction. It is kept as an opt-in for anyone who runs with the dashboard
-// switched off, shortened to a single clause, and moved below the bar so that
-// enabling it still does not cover the panel.
 var label warn = na
-if barstate.islast and warnLabel
+if barstate.islast
     string msg = ""
     if oiLooksNotional
-        msg := "⚠ OI feed looks USD-denominated — OI readings off"
+        why = oiCurSaysNotional ? "the feed reports its currency as " + oiCur : "its magnitude is " + str.tostring(oiRaw, "#") + ", far above the ~1e5 expected for BTC-denominated OI"
+        msg := "⚠ Open interest feed looks USD-denominated — " + why + ". USD notional = base OI x price, so it tracks price rather than positioning. OI readings disabled; point the input at a BASE-UNIT OI symbol."
     else if not oiOK
-        msg := "⚠ Open interest unavailable or stale — OI readings off"
+        msg := "⚠ Open interest unavailable or stale — OI readings disabled."
     else if fdStat == 1 or etStat == 1 or lLStat == 1 or lSStat == 1
-        msg := "⚠ An adapter is enabled but not wired — see SETUP REQUIRED"
+        msg := "⚠ An external adapter is enabled but its Source is still the chart's close. Set the Source to the other indicator's plot, or turn the adapter off. It reads MISCONFIGURED, not STALE, in DATA HEALTH."
     else if soprStat == 2
-        msg := "⚠ A timestamp-verified feed is stale — see DATA"
+        msg := "⚠ A timestamp-verified feed is stale — its readings are suppressed. See DATA HEALTH."
     else if fdStat == 2 or etStat == 2 or lLStat == 2 or lSStat == 2
-        msg := "⚠ An adapter stopped updating — see DATA"
+        msg := "⚠ An external adapter has not changed value for a long time. Its readings are suppressed as a precaution. This is an update-activity heuristic, not proof the feed is dead — a plot that legitimately repeats a value looks identical. See DATA HEALTH."
     else if liqLOK and liqSOK and not liqPaired
-        msg := "⚠ Liquidation pairing not declared — balance withheld"
+        msg := "⚠ Both liquidation adapters are live but you have not declared that they share a unit and source. LIQ BALANCE is withheld: (long − short) / (long + short) is only meaningful between comparable quantities, and two mismatched scales still land inside [−1, +1]."
     label.delete(warn)
     if msg != ""
-        warn := label.new(bar_index, low, msg, yloc = yloc.price, color = color.new(color.orange, 20), textcolor = color.white, style = label.style_label_up, size = size.tiny)
+        warn := label.new(bar_index, high, msg, yloc = yloc.price, color = color.orange, textcolor = color.white, style = label.style_label_left, size = size.small)
 
 // ---- test hooks, hidden from the chart and the Data Window ----
 // Pine allows at most 64 plot outputs, so the nine feed statuses, the eleven
-// direction codes, the ten intensity levels and the seven booleans are packed
-// into one number each. All four are exact in a float64: 5^9 = 1,953,125,
-// 3^11 = 177,147 and 2^7 = 128.
-// The boolean pack was added when the risk-budget outputs took the file to the
-// 64-plot ceiling exactly. Bit order is fixed and decoded in tests.mjs:
-//   1 tfOK  2 oiObs  4 flowOK  8 partOK  16 oiOK  32 oiLooksNotional  64 changed
-boolPack = (tfOK ? 1 : 0) + (oiObs ? 2 : 0) + (flowOK ? 4 : 0) + (partOK ? 8 : 0) + (oiOK ? 16 : 0) + (oiLooksNotional ? 32 : 0) + (changed ? 64 : 0)
+// direction codes and the ten intensity levels are packed into one number each.
+// All three are exact in a float64: 5^9 = 1,953,125 and 3^11 = 177,147.
 statPack = refStat + 5 * (spotStat + 5 * (oiStat + 5 * (dailyStat + 5 * (soprStat + 5 * (fdStat + 5 * (etStat + 5 * (lLStat + 5 * lSStat)))))))
 dirPack  = (oi24Dir + 1) + 3 * ((oi4Dir + 1) + 3 * ((pmDir + 1) + 3 * ((fdDir + 1) + 3 * ((etDir + 1) + 3 * ((ptDir + 1) + 3 * ((rsDir + 1) + 3 * ((rpDir + 1) + 3 * ((lqBDir + 1) + 3 * ((mechPx + 1) + 3 * (mechOi + 1))))))))))
 lvlPack  = oi24Lvl + 3 * (oi4Lvl + 3 * (pmLvl + 3 * (fdLvl + 3 * (etLvl + 3 * (ptLvl + 3 * (rsLvl + 3 * (rpLvl + 3 * (lqLLvl + 3 * lqSLvl))))))))
@@ -1608,7 +1275,9 @@ float maxExt = na
 if anomCount > 0
     maxExt := array.max(aExt)
 
+plot(tfOK ? 1 : 0,   "t_tfOK",      display = display.none)
 plot(rC,             "t_refClose",  display = display.none)
+plot(oiObs ? 1 : 0,  "t_oiObs",     display = display.none)
 plot(oiN24,          "t_oiN24",     display = display.none)
 plot(soprZU,         "t_soprZ",     display = display.none)
 plot(atr14,          "t_atr14",     display = display.none)
@@ -1655,13 +1324,16 @@ plot(spSt,           "t_spSt",      display = display.none)
 plot(oi24St,         "t_oi24St",    display = display.none)
 plot(anomCount,      "t_anomCount", display = display.none)
 plot(maxExt,         "t_maxExt",    display = display.none)
+plot(changed ? 1 : 0, "t_changed",  display = display.none)
 plot(evCount,        "t_evCount",   display = display.none)
 plot(array.get(evStat, 0), "t_evPush", display = display.none)
 plot(array.get(evStat, 1), "t_evDup",  display = display.none)
 plot(rowsUsed,       "t_rowsUsed",  display = display.none)
+plot(flowOK ? 1 : 0, "t_flowOK",    display = display.none)
+plot(partOK ? 1 : 0, "t_partOK",    display = display.none)
 plot(perpDelta,      "t_perpDelta", display = display.none)
-plot(boolPack,       "t_boolPack",  display = display.none)
+plot(oiOK ? 1 : 0,   "t_oiOK",      display = display.none)
+plot(oiLooksNotional ? 1 : 0, "t_oiNotional", display = display.none)
 plot(statPack,       "t_statPack",  display = display.none)
 plot(dirPack,        "t_dirPack",   display = display.none)
 plot(lvlPack,        "t_lvlPack",   display = display.none)
-plot(rvol30,         "t_rvol30",    display = display.none)
