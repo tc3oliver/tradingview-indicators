@@ -1,0 +1,24 @@
+{
+ "IT1": {
+  "raw": 432,
+  "configs": 144,
+  "eigen": 55.00000000000493,
+  "cluster": 22,
+  "effective": 55.00000000000493
+ },
+ "TP1": {
+  "raw": 288,
+  "configs": 96,
+  "eigen": 21.00000000000179,
+  "cluster": 2,
+  "effective": 21.00000000000179
+ },
+ "REG": {
+  "raw": 45,
+  "configs": 15,
+  "effective": 15
+ },
+ "N_raw": 765,
+ "N_cfg": 255,
+ "N_eff": 92
+}
