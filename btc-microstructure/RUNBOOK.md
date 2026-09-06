@@ -56,7 +56,8 @@ To keep it running across logouts on macOS or Linux:
 nohup npm run collector > collector.log 2>&1 &
 ```
 
-Expect roughly **0.3–0.6 GB per day**. A 30-day prospective sample is 10–20 GB.
+Measured at about **0.3 GB per day** (3.4 KB/s compressed, on a quiet weekend — an
+active weekday will be more). A 30-day prospective sample is on the order of 9–15 GB.
 
 ## Run the research
 

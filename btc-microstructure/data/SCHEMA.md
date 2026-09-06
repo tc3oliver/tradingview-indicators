@@ -103,7 +103,8 @@ half-written.
 
 ## Disk
 
-Measured on BTCUSDT: depth ≈ 10 msg/s, aggTrade ≈ 2 msg/s, features 1/s. Expect roughly
-**0.3–0.6 GB per day** compressed, so a 30-day prospective sample is on the order of
-**10–20 GB**. Live usage is reported by the collector and on the planner's integrity
+Measured on BTCUSDT: depth ≈ 10 msg/s, aggTrade ≈ 4.5 msg/s, features 1/s, and about
+**3.4 KB/s compressed** — roughly **0.3 GB per day**, so a 30-day prospective sample is
+on the order of **9 GB**. That figure was taken on a quiet weekend; an active weekday
+will be higher. Live usage is reported by the collector and on the planner's integrity
 panel. `bookTicker` (~140 msg/s) is deliberately not persisted.
