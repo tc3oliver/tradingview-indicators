@@ -234,21 +234,22 @@ export async function plannerDifferential() {
   ];
 
   // v1.0 encoded "follow the live price" and "derive the stop from ATR" as a
-  // magic zero. v1.1 replaced both with an explicit mode, which is the whole
-  // point of §2 — so the same CASE is expressed in each build's own idiom and
-  // the two must still produce the same numbers.
+  // magic zero. v1.1 replaced both with an explicit mode; v1.2 replaced the
+  // modes with checkboxes, because two behaviours never needed a dropdown. The
+  // same CASE is therefore expressed in each build's own idiom, and the two must
+  // still produce the same numbers.
   const applyPlan = (src, c, isNew) => {
     let x = src;
     if (isNew) {
       x = setBool(x, 'Enable trade plan', true);
       // Costs OFF: this compares the arithmetic v1.0 actually had.
       x = setBool(x, 'Include costs in position sizing', false);
-      x = setStr(x, 'Entry', c.entry > 0 ? 'Manual price' : 'Current price');
-      x = setStr(x, 'Stop', c.stop > 0 ? 'Manual price' : 'ATR distance');
-      x = setNum(x, '  Entry price', c.entry.toFixed(1));
-      x = setNum(x, '  Stop price', c.stop.toFixed(1));
+      x = setBool(x, 'Use manual entry', c.entry > 0);
+      x = setBool(x, 'Use ATR stop', c.stop <= 0);
+      x = setNum(x, '  Manual entry price', c.entry.toFixed(1));
+      x = setNum(x, 'Stop price', c.stop.toFixed(1));
       x = setNum(x, '  ATR multiple', '1.5');
-      x = setNum(x, '  Risk (%)', c.risk.toFixed(2));
+      x = setNum(x, 'Risk (%)', c.risk.toFixed(2));
     } else {
       x = setNum(x, 'Entry price (0 = current price)', c.entry.toFixed(1));
       x = setNum(x, 'Invalidation price (0 = auto)', c.stop.toFixed(1));

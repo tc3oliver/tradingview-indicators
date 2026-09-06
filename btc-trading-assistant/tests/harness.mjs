@@ -191,7 +191,7 @@ export const fin = (a) => a.filter(Number.isFinite);
 export const BOOL_BITS = {
   tfOK: 1, oiObs: 2, partOK: 4, oiOK: 8, oiNotional: 16, changed: 32, newCtx: 64,
   planOK: 128, capped: 256, planActive: 512, costOn: 1024, stdChart: 2048,
-  qtyTooSmall: 4096, linearOK: 8192, planFatal: 16384,
+  qtyTooSmall: 4096, linearOK: 8192, planFatal: 16384, needStop: 32768, needFill: 65536,
 };
 export const bser = (ctx, name, len) =>
   ser(ctx, 't_boolPack', len).map((v) => (Number.isFinite(v) ? ((Math.round(v) & BOOL_BITS[name]) ? 1 : 0) : NaN));

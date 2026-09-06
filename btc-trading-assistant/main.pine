@@ -151,32 +151,56 @@ TR_EXIT     = 0.2
 // uses confirm = true, so adding the indicator draws the context immediately
 // instead of opening a click-on-the-chart dialog.
 //
-// `active =` greys out an input that cannot affect anything in the current
-// configuration. It is not cosmetic: an editable ATR multiple beside a manual
-// stop price is an invitation to set a number that is silently ignored, and a
-// user who does that has been misled by the settings dialog.
+// FOUR CONTROLS MAKE A PLAN: direction, stop, account equity, risk %. That is
+// the whole simple path, and the two groups it lives in are short because they
+// CONTAIN little — not because the rest is greyed out. A disabled input is
+// still an input the eye has to read and skip, so the way to a short first
+// screen is fewer inputs, not more `active =`.
+//
+// Everything else has a default that is either right or advanced. Entry follows
+// the market, the target is 2R, risk is a percentage of equity, costs are in,
+// and the position is not open yet. Each of those is overridable in a group
+// whose name says "Advanced", and nobody has to visit one to size a trade.
+//
+// `active =` still greys out an input that cannot affect anything in the
+// current configuration, which is not cosmetic: an editable ATR multiple beside
+// an ATR stop that is switched off is an invitation to set a number that is
+// silently ignored.
 
 G_PLAN = "Trade plan"
-planOn    = input.bool(false, "Enable trade plan", group = G_PLAN, tooltip = "Off by default. Market context needs no configuration; the plan needs your direction, entry and invalidation, so it stays silent until you ask for it.")
-planStage = input.string("Planning", "Stage", options = ["Planning", "Active"], group = G_PLAN, active = planOn, tooltip = "PLANNING: the trade is not on. The panel shows what the position would be and how far price is from your entry.\n\nACTIVE: you are in it. The panel switches to live R, estimated net P&L and distance to your stop and target. Active requires a manual entry price — the price you actually filled at — because a plan whose entry follows the market has no fill to measure from.")
-dirIn     = input.string("Long", "Direction", options = ["Long", "Short"], group = G_PLAN, active = planOn)
-entryMode = input.string("Current price", "Entry", options = ["Current price", "Manual price"], group = G_PLAN, active = planOn)
-entryIn   = input.price(0.0, "  Entry price", group = G_PLAN, active = planOn and entryMode == "Manual price", tooltip = "Drag the marker on the chart, or type a price. Everything downstream — size, risk, cost, targets, break-even — updates as you move it.")
-stopMode  = input.string("Manual price", "Stop", options = ["Manual price", "ATR distance"], group = G_PLAN, active = planOn)
-stopIn    = input.price(0.0, "  Stop price", group = G_PLAN, active = planOn and stopMode == "Manual price", tooltip = "The price at which the trade idea is wrong. Draggable on the chart.")
-atrMult   = input.float(1.5, "  ATR multiple", minval = 0.25, maxval = 10, step = 0.25, group = G_PLAN, active = planOn and stopMode == "ATR distance", tooltip = "Places the stop this many chart ATR(14) from entry. A distance convention, not a prediction.")
-tgtMode   = input.string("R multiple", "Target", options = ["R multiple", "Manual price"], group = G_PLAN, active = planOn)
-tgtR      = input.float(2.0, "  Target (R)", minval = 0.25, maxval = 20, step = 0.25, group = G_PLAN, active = planOn and tgtMode == "R multiple")
-tgtIn     = input.price(0.0, "  Target price", group = G_PLAN, active = planOn and tgtMode == "Manual price", tooltip = "Draggable on the chart.")
+planOn = input.bool(false, "Enable trade plan", group = G_PLAN, tooltip = "Off by default. Market context needs no configuration; the plan needs your direction and your invalidation, so it stays silent until you ask for it.")
+dirIn  = input.string("Long", "Direction", options = ["Long", "Short"], group = G_PLAN, active = planOn, tooltip = "The direction of YOUR trade. This tool does not pick one for you and never will — no study here found a rule that could.")
+stopIn = input.price(0.0, "Stop price", group = G_PLAN, active = planOn, tooltip = "The price at which your trade idea is wrong. Drag the line on the chart, or type the number here.\n\nNothing is sized until you set it. The tool will not guess your invalidation, because choosing it is the decision the rest of the arithmetic depends on.")
 
-G_ACCT = "Account and risk"
-riskMode = input.string("Percent of equity", "Risk per trade", options = ["Percent of equity", "Fixed cash amount"], group = G_ACCT)
-equity   = input.float(10000, "Account equity", minval = 1, group = G_ACCT, tooltip = "Read in both risk modes: the exposure cap is a multiple of equity, and the panel states risk as a percentage of it.")
-riskPct  = input.float(1.0, "  Risk (%)", minval = 0.05, maxval = 10, step = 0.25, group = G_ACCT, active = riskMode == "Percent of equity")
-riskCash = input.float(100, "  Risk ($)", minval = 1, group = G_ACCT, active = riskMode == "Fixed cash amount")
-maxLev   = input.float(1.0, "Max exposure (x equity)", minval = 0.1, maxval = 10, step = 0.5, group = G_ACCT, tooltip = "Caps position notional. When the stop is very tight, an uncapped size would demand leverage; the cap keeps the size inside what you actually allow. When it binds, the panel says SIZE CAPPED and shows the risk you are ACTUALLY taking beside the one you asked for.")
+G_ACCT = "Account"
+equity  = input.float(10000, "Account equity", minval = 1, group = G_ACCT, tooltip = "How much money the position size is calculated from. Usually set once and left alone.")
+riskPct = input.float(1.0, "Risk (%)", minval = 0.05, maxval = 10, step = 0.25, group = G_ACCT, tooltip = "How much of the account this trade loses if the stop is hit. 1% of a 10,000 account is 100.")
 
-G_COST = "Trading costs"
+G_ADVP = "Advanced — plan"
+// ENTRY. Following the current price is what you want while you are still
+// deciding, so it is the default and it needs no control at all.
+useManualEntry = input.bool(false, "Use manual entry", group = G_ADVP, active = planOn, tooltip = "Off: the planned entry is the current price. On: it is the price below.")
+entryIn        = input.price(0.0, "  Manual entry price", group = G_ADVP, active = planOn and useManualEntry, tooltip = "Draggable on the chart. Size, risk, cost, targets and break-even all update as you move it.")
+// STOP. Deliberately NOT derived from ATR unless asked for: a stop the tool
+// chose reads as the tool deciding where your idea is wrong.
+useAtrStop     = input.bool(false, "Use ATR stop", group = G_ADVP, active = planOn, tooltip = "Off: your Stop price is used. On: the stop is placed a fixed multiple of chart ATR(14) from entry and the Stop price is ignored.\n\nA distance convention, not a prediction.")
+atrMult        = input.float(1.5, "  ATR multiple", minval = 0.25, maxval = 10, step = 0.25, group = G_ADVP, active = planOn and useAtrStop)
+// TARGET. 2R by default, so the R ladder on the chart already answers "where
+// would I take it off" without anyone setting anything.
+useCustomTgt   = input.bool(false, "Use custom target", group = G_ADVP, active = planOn, tooltip = "Off: the target sits at a multiple of your risk. On: it is the price below.")
+tgtR           = input.float(2.0, "  Target (R)", minval = 0.25, maxval = 20, step = 0.25, group = G_ADVP, active = planOn and not useCustomTgt, tooltip = "In multiples of the distance from entry to stop. At 2R a winner pays twice what the stop costs.")
+tgtIn          = input.price(0.0, "  Custom target price", group = G_ADVP, active = planOn and useCustomTgt, tooltip = "Draggable on the chart.")
+// LIFECYCLE, in the words of the thing that happened rather than in the words
+// of the state machine. Internally this is still Planning / Active.
+posOpen        = input.bool(false, "Position opened", group = G_ADVP, active = planOn, tooltip = "Off while you are still planning: the panel shows what the position WOULD be, and how far price is from your entry.\n\nOn once you are in it: the panel switches to live R, estimated net P&L, and distance to your stop and target. It then needs the price you actually filled at — a plan whose entry follows the market has no fill to measure from.")
+fillIn         = input.price(0.0, "  Actual fill price", group = G_ADVP, active = planOn and posOpen, tooltip = "The price you actually got. Draggable on the chart.")
+
+G_ADVR = "Advanced — risk"
+useFixedCash = input.bool(false, "Use fixed cash risk", group = G_ADVR, active = planOn, tooltip = "Off: risk is a percentage of account equity. On: it is the flat amount below, whatever the account is worth.")
+riskCash     = input.float(100, "  Fixed risk amount ($)", minval = 1, group = G_ADVR, active = planOn and useFixedCash)
+maxLev       = input.float(1.0, "Max exposure (x equity)", minval = 0.1, maxval = 10, step = 0.5, group = G_ADVR, active = planOn, tooltip = "Caps position notional. When the stop is very tight, an uncapped size would demand leverage; the cap keeps the size inside what you actually allow. When it binds, the panel says SIZE CAPPED and shows the risk you are ACTUALLY taking beside the one you asked for.")
+
+G_COST = "Advanced — costs"
 // COSTS ARE YOURS, NOT BINANCE'S. This is not a live fee lookup and does not
 // claim to be one: it is two numbers you supply, each meaning commission plus
 // the slippage you expect on ONE side. The defaults are a round 5 bp — close to
@@ -1486,26 +1510,42 @@ chartBTC = str.contains(tickU, "BTC") or str.contains(tickU, "XBT")
 patr    = ta.atr(14)
 isLong  = dirIn == "Long"
 dirS    = isLong ? 1 : -1
-planActive = planOn and planStage == "Active"
+// LIFECYCLE. "Position opened" is the user-facing name; Planning and Active are
+// the internal states and the words the panel prints as STATUS. The stage is no
+// longer something to choose from a dropdown — it follows from whether the trade
+// is on, which the user already knows without being asked to translate it.
+planActive = planOn and posOpen
 
-// ENTRY. "Current price" follows the market, which is what you want while you
-// are still deciding. ACTIVE deliberately refuses it: a live entry has no fill
-// to measure a live R from, and a panel that recomputed your entry every tick
-// would report +0.00R forever while the position moved.
-entryPx = entryMode == "Manual price" ? (entryIn > 0 ? entryIn : na) : close
-entryLive = entryMode == "Current price"
+// ENTRY. It follows the market by default, which is what you want while you are
+// still deciding, and no control is needed to say so. Once the position is
+// opened it becomes the price you actually filled at: a floating entry has no
+// fill to measure a live R from, and a panel that recomputed your entry every
+// tick would report +0.00R forever while the position moved.
+entryLive   = not posOpen and not useManualEntry
+entryManual = posOpen ? (fillIn > 0 ? fillIn : na) : (entryIn > 0 ? entryIn : na)
+entryPx     = entryLive ? close : entryManual
 
-// STOP.
+// STOP. Manual, and never quietly derived: an ATR stop chosen for you would read
+// as the tool deciding where your idea is wrong, which is the one decision it
+// has no business making. Switching the ATR stop on is an explicit act.
 autoStop = na(entryPx) ? na : entryPx - dirS * atrMult * patr
-stopPx   = stopMode == "ATR distance" ? autoStop : (stopIn > 0 ? stopIn : na)
+stopPx   = useAtrStop ? autoStop : (stopIn > 0 ? stopIn : na)
 
 // --- blocking conditions, each with something the user can actually do -------
 // Kept separate from planOK so the panel can say WHICH one is wrong. A single
 // "invalid plan" would be true and useless.
-blkActive = planActive and entryLive
+//
+// The two INCOMPLETE states are the common ones and get their own names: a plan
+// with no stop and a just-opened position with no fill are not errors, they are
+// the next thing to do. v1.0's "Active with a live entry" block is gone because
+// the configuration that produced it no longer exists — opening the position
+// switches the entry to the fill field rather than leaving the two to disagree.
+needFill = planOn and posOpen and na(entryPx)
+needStop = planOn and not needFill and not na(entryPx) and na(stopPx)
+
 blkChart  = not stdChart and entryLive
 blkInstr  = not linearOK
-planFatal = planOn and (blkActive or blkChart or blkInstr)
+planFatal = planOn and (blkChart or blkInstr)
 
 // A stop on the wrong side of entry means the direction and the level disagree;
 // every derived number would be nonsense, so the plan is voided rather than
@@ -1532,7 +1572,7 @@ costEntryU = planOK ? entryPx * eRate : na           // per unit, entry side
 costStopU  = planOK ? stopPx * xRate : na            // per unit, exit at the stop
 riskPerUnit = planOK ? stopDist + costEntryU + costStopU : na
 
-riskBudget = riskMode == "Fixed cash amount" ? riskCash : equity * riskPct / 100.0
+riskBudget = useFixedCash ? riskCash : equity * riskPct / 100.0
 
 qtyRaw = planOK ? riskBudget / riskPerUnit : na
 qtyCap = planOK ? maxLev * equity / entryPx : na
@@ -1582,7 +1622,7 @@ r2 = planOK ? entryPx + dirS * 2 * stopDist : na
 r3 = planOK ? entryPx + dirS * 3 * stopDist : na
 
 tgtAuto = planOK ? entryPx + dirS * tgtR * stopDist : na
-tgtPx   = planOK ? (tgtMode == "Manual price" ? (tgtIn > 0 ? tgtIn : na) : tgtAuto) : na
+tgtPx   = planOK ? (useCustomTgt ? (tgtIn > 0 ? tgtIn : na) : tgtAuto) : na
 // A target on the wrong side of entry is the same error as a stop on the wrong
 // side, and gets the same treatment: withheld, not flipped.
 tgtOK   = planOK and not na(tgtPx) and (isLong ? tgtPx > entryPx : tgtPx < entryPx)
@@ -1860,7 +1900,7 @@ stopPctTxt = na(stopDist) or na(entryPx) or entryPx <= 0 ? "" : str.tostring(sto
 riskPctTxt = na(actRisk) or equity <= 0 ? "" : str.tostring(actRisk / equity * 100, "#.##") + "% · " + rAbs(riskR)
 tgtRTxt    = not tgtOK ? "" : "Gross " + rAbs(tgtGrossR) + " · Net " + rAbs(tgtNetR)
 costTxt    = na(costStop) ? "" : rAbs(costLoadR)
-blockTxt   = blkInstr ? "Non-linear instrument — sizing assumes one quote unit per unit of price. Point value " + str.tostring(pointVal, "#.####") + "." : blkChart ? "Non-standard chart type. Its prices are synthetic — set Entry to Manual price to size from a real one." : blkActive ? "Active needs the price you actually filled at — set Entry to Manual price." : ""
+blockTxt   = blkInstr ? "Non-linear instrument — sizing assumes one quote unit per unit of price. Point value " + str.tostring(pointVal, "#.####") + "." : blkChart ? "Non-standard chart type. Its prices are synthetic — switch on Use manual entry to size from a real price." : ""
 
 // FOOTER, and the whole of the product's standing disclaimer. It replaced a
 // full-width AUTOMATIC SIGNAL / NONE VALIDATED row, which spent the most
@@ -1959,8 +1999,17 @@ if showTable and barstate.islast
             if planFatal
                 wideRow(dash, r, blockTxt, cBadBg, szBody)
                 r += 1
+            // The two INCOMPLETE states name the next action instead of calling
+            // it an error. A plan with no stop is not broken, it is unfinished,
+            // and the panel that says "invalid plan" teaches nothing.
+            else if needFill
+                wideRow(dash, r, "SET ACTUAL FILL PRICE · the price you actually got, in Advanced — plan", cBadBg, szBody)
+                r += 1
+            else if needStop
+                wideRow(dash, r, "SET STOP · drag the stop line, or enter your invalidation price", cBadBg, szBody)
+                r += 1
             else if not sideOK
-                wideRow(dash, r, na(entryPx) or na(stopPx) ? "Set an entry price and a stop price." : "The stop is on the wrong side of entry for a " + str.lower(dirTxt) + ".", cBadBg, szBody)
+                wideRow(dash, r, na(entryPx) ? "Set a manual entry price." : "The stop is on the wrong side of entry for a " + str.lower(dirTxt) + ".", cBadBg, szBody)
                 r += 1
             else
                 if planActive
@@ -1969,7 +2018,7 @@ if showTable and barstate.islast
                     r += 1
                     addRow(dash, r, "NET P&L", susd(livePnlNet), "gross " + susd(livePnlGross), szBody)
                     r += 1
-                addRow(dash, r, "ENTRY", px(rt(entryPx)), entryLive ? "live" : "", szBody)
+                addRow(dash, r, "ENTRY", px(rt(entryPx)), entryLive ? "live" : posOpen ? "filled" : "planned", szBody)
                 r += 1
                 addRow(dash, r, "STOP", px(rt(stopPx)), stopPctTxt, szBody)
                 r += 1
@@ -1977,7 +2026,7 @@ if showTable and barstate.islast
                     addRow(dash, r, "TARGET", px(rt(tgtPx)), tgtRTxt, szBody)
                     r += 1
                 else
-                    addRow(dash, r, "TARGET", "not set", tgtMode == "Manual price" ? "set a target price" : "", szBody)
+                    addRow(dash, r, "TARGET", "not set", useCustomTgt ? "set a custom target price" : "", szBody)
                     r += 1
                 if planActive
                     addRow(dash, r, "TO STOP", rAbs(toStopR), "", szBody)
@@ -2140,13 +2189,13 @@ if showTable and barstate.islast
             measRow(dash, r, "PLAN", "entry and stop disagree with the direction", "INVALID")
             r += 1
         else
-            measRow(dash, r, "STAGE", str.upper(stgTxt) + (entryLive ? "  ·  live entry" : "  ·  manual entry"), dirTxt)
+            measRow(dash, r, "STAGE", str.upper(stgTxt) + (entryLive ? "  ·  live entry" : posOpen ? "  ·  actual fill" : "  ·  manual entry"), dirTxt)
             r += 1
             measRow(dash, r, "ENTRY", px(rt(entryPx)), "")
             r += 1
-            measRow(dash, r, "INVALIDATION", px(rt(stopPx)) + "  (" + stopPctTxt + ")", stopMode == "ATR distance" ? "ATR STOP" : "MANUAL STOP")
+            measRow(dash, r, "INVALIDATION", px(rt(stopPx)) + "  (" + stopPctTxt + ")", useAtrStop ? "ATR STOP" : "MANUAL STOP")
             r += 1
-            measRow(dash, r, "TARGET", tgtOK ? px(rt(tgtPx)) + "  (" + tgtRTxt + ")" : "not set", tgtMode == "Manual price" ? "MANUAL TARGET" : "R MULTIPLE")
+            measRow(dash, r, "TARGET", tgtOK ? px(rt(tgtPx)) + "  (" + tgtRTxt + ")" : "not set", useCustomTgt ? "CUSTOM TARGET" : "R MULTIPLE")
             r += 1
             measRow(dash, r, "RISK PER UNIT", str.tostring(riskPerUnit, "#.##") + "  = stop " + str.tostring(stopDist, "#.##") + " + cost " + str.tostring(costEntryU + costStopU, "#.##"), costOn ? "COSTS IN SIZING" : "COSTS EXCLUDED")
             r += 1

@@ -22,31 +22,45 @@ const setStr = (src, label, v) =>
 const setBool = (src, label, v) =>
   sub(src, new RegExp(`input\\.bool\\((?:true|false),\\s*"${esc(label)}"`), `input.bool(${v}, "${label}"`);
 
-// One place that knows v1.1's plan-input vocabulary. `entry`/`stop`/`target` of
-// 0 mean "use the mode that does not need a price" — Current price, ATR
-// distance, R multiple — rather than v1.0's magic zero, which is exactly what
-// §2 removed from the product.
+// One place that knows the plan-input vocabulary. v1.2 replaced four mode
+// dropdowns with checkboxes, so a case is now described by which behaviours it
+// switches ON rather than by which mode string it selects. `entry`/`stop`/
+// `target` of 0 still mean "leave the default alone" — current price, no stop,
+// 2R — and the defaults are now the simple path rather than a magic zero.
 export const plan = (o = {}) => {
   let x = setBool(BASE, 'Enable trade plan', true);
-  x = setStr(x, 'Stage', o.stage ?? 'Planning');
   x = setStr(x, 'Direction', o.dir ?? 'Long');
-  x = setStr(x, 'Entry', (o.entry ?? 0) > 0 ? 'Manual price' : 'Current price');
-  x = setStr(x, 'Stop', (o.stop ?? 0) > 0 ? 'Manual price' : 'ATR distance');
-  x = setStr(x, 'Target', (o.target ?? 0) > 0 ? 'Manual price' : 'R multiple');
-  x = setNum(x, '  Entry price', (o.entry ?? 0).toFixed(2));
-  x = setNum(x, '  Stop price', (o.stop ?? 0).toFixed(2));
-  x = setNum(x, '  Target price', (o.target ?? 0).toFixed(2));
-  x = setNum(x, '  Target (R)', (o.tgtR ?? 2).toFixed(2));
+
+  // A pinned entry is written to BOTH price fields — the Advanced planned entry
+  // and the actual fill — so a test can flip "Position opened" on a plan built
+  // here and still be talking about the same price. They are different fields
+  // because they are different things: one is where you intend to get in, the
+  // other is where you did.
+  const entry = o.entry ?? 0;
+  x = setBool(x, 'Use manual entry', entry > 0);
+  x = setNum(x, '  Manual entry price', entry.toFixed(2));
+  x = setNum(x, '  Actual fill price', entry.toFixed(2));
+  if ((o.stage ?? 'Planning') === 'Active' || o.posOpen) x = setBool(x, 'Position opened', true);
+
+  // No stop price means the ATR stop, which is how the old grid expressed
+  // "derive it" — but now only because the test asked for it explicitly.
+  x = setBool(x, 'Use ATR stop', (o.stop ?? 0) <= 0);
+  x = setNum(x, 'Stop price', (o.stop ?? 0).toFixed(2));
   x = setNum(x, '  ATR multiple', (o.atrMult ?? 1.5).toFixed(2));
+
+  x = setBool(x, 'Use custom target', (o.target ?? 0) > 0);
+  x = setNum(x, '  Custom target price', (o.target ?? 0).toFixed(2));
+  x = setNum(x, '  Target (R)', (o.tgtR ?? 2).toFixed(2));
+
   x = setNum(x, 'Account equity', (o.eq ?? 10000).toFixed(2));
-  x = setNum(x, '  Risk (%)', (o.risk ?? 1).toFixed(4));
+  x = setNum(x, 'Risk (%)', (o.risk ?? 1).toFixed(4));
   x = setNum(x, 'Max exposure (x equity)', (o.lev ?? 100).toFixed(2));
   x = setBool(x, 'Include costs in position sizing', o.cost !== false);
   x = setNum(x, '  Entry cost (bp)', (o.entryBp ?? 5).toFixed(2));
   x = setNum(x, '  Exit cost (bp)', (o.exitBp ?? 5).toFixed(2));
   if (o.riskCash != null) {
-    x = setStr(x, 'Risk per trade', 'Fixed cash amount');
-    x = setNum(x, '  Risk ($)', o.riskCash.toFixed(2));
+    x = setBool(x, 'Use fixed cash risk', true);
+    x = setNum(x, '  Fixed risk amount ($)', o.riskCash.toFixed(2));
   }
   if (o.alerts) x = setBool(x, 'Enable plan alerts', true);
   if (o.alertR) x = setBool(x, '  Also alert at 1R / 2R / 3R', true);
@@ -141,7 +155,7 @@ export async function sourceChecks() {
   const actives = (RAW.match(/\bactive = /g) ?? []).length;
   check(actives >= 15, `${actives} inputs are conditionally greyed out with active =`);
   check(!/confirm\s*=\s*true/.test(code), 'no input uses confirm = true, so first run draws context instead of opening a dialog');
-  for (const p of ['  Entry price', '  Stop price', '  Target price']) {
+  for (const p of ['Stop price', '  Manual entry price', '  Custom target price', '  Actual fill price']) {
     check(new RegExp(`input\\.price\\([^\\n]*"${p}"`).test(RAW), `${p.trim()} is an input.price(), draggable on the chart`);
   }
 
@@ -493,7 +507,7 @@ export async function panelChecks() {
   check(leaked2.length === 0, `Planning view carries no research vocabulary either (${leaked2.join(', ') || 'clean'})`);
 
   // §11: ACTIVE swaps the planning row for live tracking.
-  const act = readTable(await run(rows, { source: setStr(planned, 'Stage', 'Active') })).join('\n');
+  const act = readTable(await run(rows, { source: setBool(planned, 'Position opened', true) })).join('\n');
   for (const row of ['LIVE', 'NET P&L', 'TO STOP', 'TO TARGET']) {
     check(act.includes(row), `Active view shows ${row}`);
   }
@@ -528,7 +542,7 @@ export async function panelChecks() {
 
   // §24: defaults.
   check(/showMa    = input\.bool\(false/.test(RAW), 'daily 200MA plot is off by default');
-  check(/planOn    = input\.bool\(false/.test(RAW), 'the trade plan is off by default');
+  check(/planOn = input\.bool\(false/.test(RAW), 'the trade plan is off by default');
   check(/extOn      = input\.bool\(false/.test(RAW), 'external context is off by default');
   check(/alertsOn = input\.bool\(false/.test(RAW), 'plan alerts are off by default');
   check(/useCost = input\.bool\(true/.test(RAW), 'costs are INCLUDED in sizing by default — the honest default');
@@ -610,12 +624,18 @@ export async function instrumentChecks() {
   const unknown = await run(rows.slice(-200), { source: symOverride(plan({ entry: 60000, stop: 58000 }), 'pointVal', 'float(na)') });
   check(fin(ser(unknown, 't_qty')).length > 0, 'an instrument that reports no point value is allowed through, not rejected');
 
-  // §11: ACTIVE needs the price you actually filled at.
-  const liveActive = await run(rows.slice(-200), { source: setStr(plan({}), 'Stage', 'Active') });
-  check(bser(liveActive, 'planFatal').every((v) => v === 1), 'ACTIVE with a live entry is blocked, not silently followed');
-  check(/actually filled/.test(readTable(liveActive).join('\n')), '...and the panel says to set a manual entry');
-  const pinnedActive = await run(rows.slice(-200), { source: setStr(plan({ entry: 60000, stop: 58000 }), 'Stage', 'Active') });
-  check(fin(ser(pinnedActive, 't_qty')).length > 0, 'ACTIVE with a manual entry works');
+  // ACTIVE needs the price you actually filled at. In v1.1 that was a BLOCK on
+  // an impossible-to-avoid configuration (Stage = Active while Entry = Current
+  // price); the control that produced it is gone, and opening the position now
+  // switches the entry to the fill field. What remains is the incomplete state:
+  // position opened, fill not yet entered.
+  const noFill = await run(rows.slice(-200), { source: plan({ stop: 58000, posOpen: true }) });
+  check(bser(noFill, 'needFill').every((v) => v === 1), 'a position opened with no fill price is an incomplete plan');
+  check(bser(noFill, 'planOK').every((v) => v !== 1), '...and nothing downstream is computed from a fill that does not exist');
+  check(fin(ser(noFill, 't_liveR')).length === 0, '...so no fake live R is printed');
+  check(/SET ACTUAL FILL PRICE/.test(readTable(noFill).join('\n')), '...and the panel names the one thing to do');
+  const pinnedActive = await run(rows.slice(-200), { source: plan({ entry: 60000, stop: 58000, stage: 'Active' }) });
+  check(fin(ser(pinnedActive, 't_qty')).length > 0, 'ACTIVE with an actual fill price works');
 
   // §24: a size below the exchange minimum is not a small position, it is not a
   // position.
@@ -863,4 +883,124 @@ export async function drawingChecks() {
   const maxBoxes = +(RAW.match(/max_boxes_count\s*=\s*(\d+)/) ?? [])[1];
   check(maxLines >= 7 && maxLines <= 50, `max_lines_count ${maxLines} comfortably exceeds the 7 lines actually used`);
   check(maxBoxes >= 2 && maxBoxes <= 20, `max_boxes_count ${maxBoxes} comfortably exceeds the 2 boxes actually used`);
+}
+
+// ---------------------------------------------------------------------------
+// FIRST-RUN UX. The complaint this release answers was not that a number was
+// wrong — it was that the settings dialog opened on fifteen controls and a
+// first-time user could not tell which four mattered.
+//
+// So these checks are about the SHAPE OF THE SETTINGS DIALOG, asserted against
+// the shipped file, plus the behaviour of every default that shape relies on.
+// A greyed-out input is still an input, so what is counted is DECLARATIONS in
+// the simple-path groups, not enabled ones.
+const GROUPS = Object.fromEntries([...RAW.matchAll(/^(G_\w+) = "([^"]+)"$/gm)].map((m) => [m[1], m[2]]));
+const INPUTS = RAW.split('\n')
+  .filter((l) => /^\w+\s*= input\./.test(l))
+  .map((l) => ({
+    name: l.match(/^(\w+)/)[1],
+    fn: l.match(/= (input\.\w+)\(/)[1],
+    label: (l.match(/,\s*"((?:[^"\\]|\\.)*)"/) ?? [])[1],
+    group: GROUPS[(l.match(/group = (G_\w+)/) ?? [])[1]],
+    dropdown: /options = \[/.test(l),
+  }));
+const SIMPLE = INPUTS.filter((i) => i.group === 'Trade plan' || i.group === 'Account');
+
+export async function uxChecks() {
+  section('FIRST-RUN UX — four controls make a plan');
+
+  // ---- the settings dialog, as a structure ----------------------------------
+  check(SIMPLE.length <= 5, `the simple path is ${SIMPLE.length} controls including Enable, target <= 5`);
+  check(SIMPLE.map((i) => i.label).join(' | ') === 'Enable trade plan | Direction | Stop price | Account equity | Risk (%)',
+    `and they are exactly the four decisions plus the switch — ${SIMPLE.map((i) => i.label).join(' | ')}`);
+  // Direction is the one dropdown that survives on the simple path, and it is
+  // not a mode: its two options are the two things themselves. "Long / Short" is
+  // the vocabulary a trader already has, where "Entry: Current price / Manual
+  // price" was a vocabulary this script invented.
+  const simpleDropdowns = SIMPLE.filter((i) => i.dropdown).map((i) => i.label);
+  check(simpleDropdowns.length === 1 && simpleDropdowns[0] === 'Direction',
+    `the only choice left on the simple path names the two things themselves (${simpleDropdowns.join(', ') || 'none'})`);
+
+  // The five dropdowns this release deleted. Each asked the user to understand
+  // an internal distinction before they could size a trade.
+  const RETIRED = ['Stage', 'Entry', 'Stop', 'Target', 'Risk per trade'];
+  const stillThere = INPUTS.filter((i) => i.dropdown && RETIRED.includes(i.label)).map((i) => i.label);
+  check(stillThere.length === 0, `the mode dropdowns are gone, not merely hidden (${stillThere.join(', ') || 'none remain'})`);
+  for (const b of ['Use manual entry', 'Use ATR stop', 'Use custom target', 'Use fixed cash risk', 'Position opened']) {
+    const i = INPUTS.find((x) => x.label === b);
+    check(i?.fn === 'input.bool', `"${b}" is a checkbox — two behaviours do not need a dropdown`);
+  }
+
+  // Group ordering is what a user actually reads: the two plain-language groups
+  // must come before anything called Advanced.
+  const order = [...new Set(INPUTS.map((i) => i.group).filter(Boolean))];
+  check(order[0] === 'Trade plan' && order[1] === 'Account', `the first two groups are the ones a beginner needs (${order.slice(0, 2).join(', ')})`);
+  const advIdx = order.findIndex((g) => g.startsWith('Advanced'));
+  check(advIdx === 2, `everything advanced is labelled Advanced and comes after (${order.join(' · ')})`);
+  note(`${INPUTS.length} inputs total · ${SIMPLE.length} on the simple path · ${INPUTS.filter((i) => i.dropdown).length} dropdowns remain, none of them a plan mode`);
+
+  // ---- tooltips on the four core controls, in plain language ----------------
+  // A tooltip that says "hysteresis" on the first screen is a tooltip written
+  // for the author.
+  const JARGON = ['hysteresis', 'z-score', 'percentile', 'σ', 'normalisation', 'basis points', 'lookahead', 'repaint'];
+  for (const l of ['Direction', 'Stop price', 'Account equity', 'Risk (%)']) {
+    const line = RAW.split('\n').find((x) => x.includes(`"${l}"`) && x.includes('input.'));
+    const tip = (line?.match(/tooltip = "([^"]*)"/) ?? [])[1] ?? '';
+    check(tip.length > 20 && !JARGON.some((j) => tip.toLowerCase().includes(j.toLowerCase())),
+      `"${l}" is explained in plain words a first-time user can act on`);
+  }
+
+  // ---- the defaults the simple path depends on ------------------------------
+  const sample = rows.slice(-200);
+  const i = sample.length - 1;
+  // Everything default except the one thing a user MUST decide.
+  const bare = await run(sample, { source: plan({ stop: 58000 }) });
+  const g = (k) => ser(bare, k)[i];
+  check(Math.abs(g('t_entry') - sample[i].close) < 1e-9, 'default entry is the current price — no entry mode to choose');
+  check(Math.abs(g('t_target') - (sample[i].close + 2 * (sample[i].close - 58000))) < 1e-6, 'default target is 2R — no target mode to choose');
+  check(Math.abs(g('t_riskBudget') - 100) < 1e-9, 'default risk is 1% of a 10,000 account — no risk mode to choose');
+  check(bser(bare, 'planActive')[i] === 0, 'a new plan is PLANNING — no stage to choose');
+  check(bser(bare, 'costOn')[i] === 1, 'costs are in the sizing by default, because leaving them out flatters the size');
+  check(fin(ser(bare, 't_qty')).length > 0, 'and a direction plus a stop is enough to produce a position size');
+
+  // ---- no stop, no size ----------------------------------------------------
+  // The failure mode this replaces: a plan enabled with nothing set, silently
+  // ATR-stopped, printing a size derived from an invalidation the user never
+  // chose.
+  const noStop = await run(sample, { source: setBool(BASE, 'Enable trade plan', true) });
+  check(bser(noStop, 'needStop').every((v) => v === 1), 'a plan with no stop is incomplete on every bar');
+  check(fin(ser(noStop, 't_qty')).length === 0, '...and produces no size rather than a wrong one');
+  check(/SET STOP/.test(readTable(noStop).join('\n')), '...and the panel says SET STOP');
+  check(/invalidation/.test(readTable(noStop).join('\n')), '...and says what a stop is, in one line');
+  check(bser(noStop, 'planOK').every((v) => v !== 1) && fin(ser(noStop, 't_refClose')).length > 0,
+    'an incomplete plan does not disturb market context — the two are independent');
+
+  // ATR is available but never automatic: the same run with nothing set must
+  // NOT quietly become an ATR stop.
+  const atr = await run(sample, { source: plan({}) });
+  check(fin(ser(atr, 't_qty')).length > 0, 'switching Use ATR stop on explicitly does size a plan');
+  check(Math.abs(ser(atr, 't_stop')[i] - (sample[i].close - 1.5 * ser(atr, 't_patr')[i])) < 1e-6,
+    '...at 1.5 ATR below entry, exactly as the multiple says');
+
+  // ---- every Advanced path still computes ----------------------------------
+  const ADV = [
+    ['manual planned entry', { entry: 60000, stop: 58000 }, (c) => Math.abs(ser(c, 't_entry')[i] - 60000) < 1e-9],
+    ['ATR stop', { atrMult: 3 }, (c) => Math.abs(ser(c, 't_stop')[i] - (sample[i].close - 3 * ser(c, 't_patr')[i])) < 1e-6],
+    ['custom target', { stop: 58000, target: 65000 }, (c) => Math.abs(ser(c, 't_target')[i] - 65000) < 1e-9],
+    ['fixed cash risk', { stop: 58000, riskCash: 250 }, (c) => Math.abs(ser(c, 't_riskBudget')[i] - 250) < 1e-9],
+    ['position opened with a fill', { entry: 60000, stop: 58000, stage: 'Active' },
+      (c) => bser(c, 'planActive')[i] === 1 && Number.isFinite(ser(c, 't_liveR')[i])],
+  ];
+  for (const [why, o, ok] of ADV) {
+    const ctx = await run(sample, { source: plan(o) });
+    check(ok(ctx), `Advanced: ${why} still calculates correctly`);
+  }
+
+  // ---- lifecycle, in the new vocabulary ------------------------------------
+  const planning = readTable(await run(sample, { source: plan({ entry: 60000, stop: 58000 }) })).join('\n');
+  const active = readTable(await run(sample, { source: plan({ entry: 60000, stop: 58000, stage: 'Active' }) })).join('\n');
+  check(/PLANNING/.test(planning) && /PRICE→ENTRY/.test(planning), 'Position opened OFF reads as PLANNING semantics');
+  check(/ACTIVE/.test(active) && /LIVE/.test(active) && /TO STOP/.test(active), 'Position opened ON reads as ACTIVE semantics');
+  check(!/Stage/.test(planning) && !/Entry mode/i.test(planning) && !/Risk mode/i.test(planning),
+    'the Decision panel names no internal mode — ACTIVE and PLANNING are status, not settings');
 }

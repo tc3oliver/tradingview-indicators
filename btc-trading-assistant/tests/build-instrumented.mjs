@@ -55,7 +55,7 @@ const SCALARS = [
 //
 // Bit order is fixed and mirrored in harness.mjs BOOL_BITS.
 const PACKS = `
-_bp = (tfOK ? 1 : 0) + (oiObs ? 2 : 0) + (partOK ? 4 : 0) + (oiOK ? 8 : 0) + (oiLooksNotional ? 16 : 0) + (changed ? 32 : 0) + (newCtx ? 64 : 0) + (planOK ? 128 : 0) + (capped ? 256 : 0) + (planActive ? 512 : 0) + (costOn ? 1024 : 0) + (stdChart ? 2048 : 0) + (qtyTooSmall ? 4096 : 0) + (linearOK ? 8192 : 0) + (planFatal ? 16384 : 0)
+_bp = (tfOK ? 1 : 0) + (oiObs ? 2 : 0) + (partOK ? 4 : 0) + (oiOK ? 8 : 0) + (oiLooksNotional ? 16 : 0) + (changed ? 32 : 0) + (newCtx ? 64 : 0) + (planOK ? 128 : 0) + (capped ? 256 : 0) + (planActive ? 512 : 0) + (costOn ? 1024 : 0) + (stdChart ? 2048 : 0) + (qtyTooSmall ? 4096 : 0) + (linearOK ? 8192 : 0) + (planFatal ? 16384 : 0) + (needStop ? 32768 : 0) + (needFill ? 65536 : 0)
 _sp = refStat + 5 * (spotStat + 5 * (oiStat + 5 * (dailyStat + 5 * (fdStat + 5 * (etStat + 5 * (lLStat + 5 * lSStat))))))
 _dp = (oi24Dir + 1) + 3 * ((oi4Dir + 1) + 3 * ((pmDir + 1) + 3 * ((fdDir + 1) + 3 * ((etDir + 1) + 3 * ((ptDir + 1) + 3 * ((rsDir + 1) + 3 * ((rpDir + 1) + 3 * ((lqBDir + 1) + 3 * ((mechPx + 1) + 3 * (mechOi + 1))))))))))
 _lp = oi24Lvl + 3 * (oi4Lvl + 3 * (pmLvl + 3 * (fdLvl + 3 * (etLvl + 3 * (ptLvl + 3 * (rsLvl + 3 * (rpLvl + 3 * (lqLLvl + 3 * lqSLvl))))))))

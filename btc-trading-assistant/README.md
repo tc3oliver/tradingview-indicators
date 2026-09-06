@@ -3,7 +3,7 @@
 Plan a BTC trade in 30 seconds.
 
 - Confirmed 4H BTC market context
-- Interactive, draggable Entry / Stop / Target
+- Draggable Stop, and a plan from four settings
 - Cost-aware position sizing
 - Fixed-risk sizing (percent of equity or fixed cash)
 - Risk / reward zones drawn on the chart
@@ -23,14 +23,21 @@ Plan a BTC trade in 30 seconds.
 
 **Then**
 
-1. Market context appears with zero configuration — default symbols, every
-   optional feed off, no dialog to fill in.
-2. Turn on **Trade plan** in the settings.
-3. Pick **Long** or **Short**.
-4. Drag the entry and stop markers on the chart until the trade looks right.
-5. Read size, risk, cost and target off the panel.
-6. Turn on **Plan alerts** and create one alert on the indicator using **Any
-   alert() function call**.
+1. Enable **Trade plan**.
+2. Choose **Long** or **Short**.
+3. Drag the **Stop** line to where your idea is wrong.
+4. Set **Account equity** and **Risk (%)**.
+
+That's it.
+
+Entry follows the current price. The target defaults to 2R. Trading costs are
+included. Position size, risk, cost and break-even update as you drag.
+
+Market context needs nothing at all — it is drawn from the moment you add the
+indicator, with default symbols and every optional feed off.
+
+Everything under **Advanced** is optional. You never have to open one of those
+groups to size a trade.
 
 **Timeframes.** 15m, 1H and 4H. The script refuses anything above 4H, because
 requesting the 4H context from a daily chart would mean reading inside an
@@ -59,6 +66,21 @@ SET A PLAN                      Enable Trade plan to size a trade
 DISCRETIONARY MODE · NO AUTO ENTRIES
 ```
 
+Turn the plan on and the first thing it asks for is the only thing it cannot work
+out for itself:
+
+```
+BTC TRADE PLAN
+LONG · PLANNING
+SET STOP · drag the stop line, or enter your invalidation price
+4H CONTEXT                 Uptrend · elevated vol · OI normal
+DISCRETIONARY MODE · NO AUTO ENTRIES
+```
+
+No size is computed until it has one. An ATR stop is available under **Advanced —
+plan** and is deliberately not the default: a stop the tool chose would read as
+the tool deciding where your idea is wrong.
+
 | Row | What it means | What it does **not** mean |
 |---|---|---|
 | `4H CONTEXT` header | Whether the four core feeds are healthy, and how long ago the 4H bar behind these readings closed. Below 4H the readings are the last **completed** 4H bar, held for the period, so they cannot repaint. | Not a live 4H reading on a 15m chart. The panel prints the age precisely so you cannot assume it refreshes. |
@@ -78,7 +100,7 @@ line. This is a **Planning** plan — you have not entered yet:
 ```
 BTC TRADE PLAN
 LONG · PLANNING
-ENTRY         79,800.00
+ENTRY         79,800.00    planned
 STOP          79,200.00    0.75% · 0.55 ATR
 TARGET        81,000.00    Gross 2.00R · Net 1.87R
 PRICE→ENTRY   +2.38R       +$1,431 · 1.79%
@@ -106,14 +128,15 @@ loses 679.50 at the stop — the 600 plus both sides of cost — so being stoppe
 costs 1.13R, not 1R. The panel prints that multiple rather than leave you to
 discover it by dividing two numbers that do not divide.
 
-Once you are in, switch the stage to **Active** and the live numbers lead:
+Once you are in, switch on **Position opened** and enter your fill. The status
+line reads `ACTIVE` and the live numbers lead:
 
 ```
 BTC TRADE PLAN
 LONG · ACTIVE
 LIVE          +0.63R
 NET P&L       +$37         gross +$47
-ENTRY         79,800.00
+ENTRY         79,800.00    filled
 STOP          79,200.00    0.75% · 0.55 ATR
 TARGET        81,000.00    Gross 2.00R · Net 1.87R
 TO STOP       1.63R
@@ -164,38 +187,63 @@ maintain.
 
 Turn on **Trade plan**, then:
 
-| Input | |
+Four controls, and one of them you set once:
+
+| Setting | Group | |
+|---|---|---|
+| Enable trade plan | Trade plan | Off by default |
+| Direction | Trade plan | Long or Short — yours, not the tool's |
+| Stop price | Trade plan | Where your idea is wrong. Drag the line, or type it |
+| Account equity | Account | Set once |
+| Risk (%) | Account | What the trade loses if the stop is hit. Default 1% |
+
+Nothing is sized until the stop is set. The panel says `SET STOP` rather than
+guessing your invalidation for you — that choice is the one every other number
+here depends on.
+
+**Everything else has a default.** Entry follows the current price, the target
+sits at 2R, risk is a percentage of equity, costs are in the sizing, and the
+position is not open yet. Each is overridable under **Advanced**, and none needs
+to be touched.
+
+| Advanced — plan | |
 |---|---|
-| Stage | `Planning` or `Active` |
-| Direction | Long or Short |
-| Entry | `Current price` follows the market, or `Manual price` for a level you type or drag |
-| Stop | `Manual price`, or `ATR distance` — a chart ATR(14) multiple from entry, a distance convention rather than a prediction |
-| Target | `R multiple` (default 2.0R) or `Manual price` |
-| Account equity | Read in both risk modes |
-| Risk per trade | `Percent of equity` (default 1%) or `Fixed cash amount` |
+| Use manual entry | Pin the planned entry to a price instead of following the market |
+| Use ATR stop | Place the stop a chart ATR(14) multiple from entry. A distance convention, not a prediction, and deliberately off by default |
+| Use custom target | A target price instead of a multiple of R |
+| Target (R) | Default 2.0 |
+| Position opened | Off while planning, on once you are in |
+| Actual fill price | Required once the position is open |
+
+| Advanced — risk | |
+|---|---|
+| Use fixed cash risk | A flat amount instead of a percentage of equity |
 | Max exposure (x equity) | Caps position notional. When it binds, the panel says `SIZE CAPPED` |
 
-`Entry price`, `Stop price` and `Target price` are `input.price` fields: drag the
-marker on the chart or type the number. Everything downstream — size, risk, cost,
-targets, break-even, the drawn zones — updates as you move it.
+`Stop price`, `Manual entry price`, `Custom target price` and `Actual fill price`
+are `input.price` fields: drag the marker on the chart or type the number.
+Everything downstream — size, risk, cost, targets, break-even, the drawn zones —
+updates as you move it.
 
-An input that cannot affect anything in the current configuration is greyed out.
-An editable ATR multiple beside a manual stop price is an invitation to set a
-number that is silently ignored.
+Two behaviours never need a dropdown, so each of these is a checkbox that says
+what it does. An input that cannot affect anything in the current configuration
+is still greyed out — an editable ATR multiple beside an ATR stop that is
+switched off is an invitation to set a number that is silently ignored.
 
-### Plan stages
+### Before and after you are in
 
-**Planning** — the trade is not on. The panel shows what the position would be
-and how far price still is from your entry (`PRICE→ENTRY`, in R, dollars and
-percent). Alerts watch the entry level.
+**Position opened, off** — you are still planning. The panel shows what the
+position would be and how far price still is from your entry (`PRICE→ENTRY`, in
+R, dollars and percent), and reads `PLANNING`. Alerts watch the entry level.
 
-**Active** — you are in it. The panel switches to `LIVE` R, estimated net P&L,
-`TO STOP` and `TO TARGET`. Alerts watch the stop and the target instead.
+**Position opened, on** — you are in it. The panel switches to `LIVE` R,
+estimated net P&L, `TO STOP` and `TO TARGET`, and reads `ACTIVE`. Alerts watch
+the stop and the target instead.
 
-**Active requires Entry mode = `Manual price`** — the price you actually filled
-at. It says so and refuses to size rather than silently following the market: an
-entry that is recomputed every tick has no fill to measure a live R from, and
-would report +0.00R forever while the position moved.
+Opening the position requires the **actual fill price** — the price you got. The
+panel says `SET ACTUAL FILL PRICE` and computes nothing until it has one, rather
+than silently following the market: an entry recomputed every tick has no fill to
+measure a live R from, and would report +0.00R forever while the position moved.
 
 ### On the chart
 
@@ -219,24 +267,28 @@ Create the alert on the indicator using **Any alert() function call**.
 
 ### When the plan refuses to size
 
-Three conditions block the plan. Each says which one it is and what to do; market
+Two conditions block the plan outright. Each says which one it is and what to do; market
 context is unaffected by all three, because it comes from `request.security` on
 the reference symbol and returns the true series regardless of how your chart is
 drawn.
 
 | Condition | What the panel says | What you do |
 |---|---|---|
-| Non-standard chart type (Heikin Ashi, Renko, Line Break, Kagi, Point & Figure) **with a live entry** | *Non-standard chart type. Its prices are synthetic — set Entry to Manual price to size from a real one.* | Set Entry to `Manual price`, or move to a standard candle chart. A synthetic close would produce a real quantity from an imaginary price. |
-| **Active** with a live entry | *Active needs the price you actually filled at — set Entry to Manual price.* | Set Entry to `Manual price` and type your fill. |
+| Non-standard chart type (Heikin Ashi, Renko, Line Break, Kagi, Point & Figure) **with a live entry** | *Non-standard chart type. Its prices are synthetic — switch on Use manual entry to size from a real price.* | Switch on `Use manual entry`, or move to a standard candle chart. A synthetic close would produce a real quantity from an imaginary price. |
 | Non-linear instrument (point value ≠ 1) | *Non-linear instrument — sizing assumes one quote unit per unit of price.* | Use BTC spot or a USDⓈ-M linear perpetual. Inverse / coin-margined futures are **not supported**: their payoff is convex in price and the arithmetic here does not describe it. |
 
 An instrument whose runtime reports no point value is treated as unknown and
 allowed through — a false rejection on a correct chart is worse than the warning
 it replaces.
 
-Two softer warnings do not block: a size below the instrument's minimum order,
-and a chart that is not BTC (context is always BTC; the plan uses your chart's
-price).
+Two states are **incomplete** rather than blocked, and the panel names the next
+action instead of calling them an error: `SET STOP` when no invalidation has been
+set, and `SET ACTUAL FILL PRICE` when the position has been marked open without
+one.
+
+Two softer warnings do not block at all: a size below the instrument's minimum
+order, and a chart that is not BTC (context is always BTC; the plan uses your
+chart's price).
 
 ---
 
@@ -345,6 +397,11 @@ sample-size analysis, the thresholds by the stability audit. They are
 research-defined semantics, not user preferences: exposing them invited a user to
 retune the meaning of a reading and then compare their panel with someone else's.
 
+The plan's five mode dropdowns — Stage, Entry, Stop, Target and Risk per trade —
+are gone as well, replaced by defaults and by checkboxes that say what they do.
+Each of them asked a first-time user to learn an internal distinction before they
+could size a trade. Flexibility that costs comprehension is not free.
+
 ---
 
 ## Suggested workflow
@@ -353,8 +410,9 @@ Two separate published indicators, used one after the other:
 
 1. **[`session-highs-and-lows-indicator`](../session-highs-and-lows-indicator/)**
    to identify the price levels you care about — session highs and lows.
-2. **BTC Trading Assistant** to plan and size the trade against one of them: drag
-   entry and stop to the levels, read the size, risk and cost, set an alert.
+2. **BTC Trading Assistant** to plan and size the trade against one of them:
+   drag the stop to the level that would invalidate the idea, read the size, risk
+   and cost, set an alert.
 
 They are not merged, and neither modifies the other. The session indicator is a
 separate script with its own release history; this one adds no level detection of

@@ -8,8 +8,13 @@ values this version reasons about come back `na`. This file separates what is
 verified automatically from what still needs the Pine Editor.
 
 **Current status: MANUAL VALIDATION REQUIRED.** No item in the second table has
-been performed. Nobody has opened the Pine Editor on v1.1. Nothing in this
+been performed. Nobody has opened the Pine Editor on v1.2. Nothing in this
 repository should be read as "fully validated" until they have been.
+
+v1.2 changed the settings dialog and nothing else, which makes it the release
+where offline testing is *least* able to stand in for the Pine Editor: the whole
+deliverable is a dialog the offline runtime does not render. Items 24–29 exist
+for exactly that reason.
 
 ---
 
@@ -19,8 +24,10 @@ Run with `npm test`. Every item below is asserted on every run, and every claim
 here corresponds to an assertion in `tests/`.
 
 **The shipped file at a glance.** 1 plot output and 0 `t_*` test hooks; 13 of
-Pine's 40 `request.*()` calls; 44 inputs, 29 of them conditionally greyed out
-with `active =`. The Decision view with no plan entered is 8 rows.
+Pine's 40 `request.*()` calls; 45 inputs, 31 of them conditionally greyed out
+with `active =`, and **5 of them on the simple path** — `Enable trade plan`,
+`Direction`, `Stop price`, `Account equity`, `Risk (%)`. The Decision view with
+no plan entered is 8 rows.
 
 ### Production / test separation
 
@@ -222,6 +229,12 @@ chart. **None has been performed.**
 | 21 | **Runtime performance on a long 5m chart** | 13 `request.security` calls plus a 2,190-bar percentile. Execution time is not measurable offline, and `calc_bars_count` — the thing meant to bound this work — has no offline effect. |
 | 22 | **`calc_bars_count` actually reduces load** on a long 5m chart | The suite proves the bounds are large enough not to truncate a reading, and that adding them changed no value. It cannot prove they *help*: the offline runtime accepts the parameter and gives no way to observe whether it honoured it. Compare load with and without on a real chart, and confirm no `max_bars_back` or truncation error appears at either bound. |
 | 23 | **On a 15m or 5m chart, confirm OI 24H and OI 4H readings populate** | A real PineTS/TradingView divergence found during this work: offline, `int(time[1])` inside a `request.security` resolves against the **chart** rather than the requested context, returning the containing 4H bar's open instead of the previous completed one. `barsBehind()` is therefore one bar pessimistic below 4H, which suppresses `oiObs` — the gate on every open-interest change reading — in the offline fixtures. On TradingView the timestamp should resolve in the requested context and the readings should appear. Until this is confirmed, an absent OI row on a lower-timeframe chart cannot be told apart from the offline artefact. The context **age** was deliberately rederived from the chart-scope context clock rather than from the requested timestamp precisely so it stays testable; the freshness path still depends on the requested timestamp and so is not. |
+| 24 | **The settings dialog opens on five controls** — `Trade plan` holding Enable / Direction / Stop price, and `Account` holding Account equity / Risk (%), with everything else below under a group named Advanced | The suite asserts the *declarations* in `main.pine`: which group each input belongs to, that the first two groups hold exactly those five labels, and that none of them is a dropdown. It cannot see the rendered dialog. TradingView's own ordering, collapsing and spacing decide what a first-time user actually meets. |
+| 25 | **A first-time user creates a valid plan by changing at most four things** — Direction, Stop, Account equity, Risk (%) — without opening an Advanced group or reading the README | This is the release's acceptance criterion and it is a human judgement. Give it to someone who has never seen this repository and watch where they hesitate. |
+| 26 | **Dragging the Stop price marker** updates size, risk, cost, break-even and the drawn zones live | Covered in part by item 12, but the stop is now the *primary* interaction rather than one of three, so it is worth its own pass. |
+| 27 | **Long and Short both produce a sane panel** from the same stop workflow, and the wrong-side guard still fires when the stop is on the wrong side | Asserted offline as arithmetic; unverified as an interaction. |
+| 28 | **`Position opened` on with no fill price** shows `SET ACTUAL FILL PRICE` and no live R, and setting the fill switches the panel to ACTIVE | The state machine and the panel text are asserted offline. What is unverified is that `Actual fill price` renders as a draggable marker and that the transition is legible while it happens. |
+| 29 | **Each Advanced override behaves in the dialog** — `Use manual entry`, `Use ATR stop`, `Use custom target`, `Use fixed cash risk` — including that the input each one supersedes reads as superseded | `Stop price` and `Target (R)` are deliberately *not* greyed out when their Advanced override is on, because the group ordering that would allow it would push Advanced above Trade plan. The checkbox label is the only thing telling the user the field is now ignored. Confirm that reads clearly, or accept it as a known rough edge. |
 
 ---
 

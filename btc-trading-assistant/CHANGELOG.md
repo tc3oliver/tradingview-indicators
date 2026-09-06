@@ -1,5 +1,58 @@
 # Changelog
 
+## 1.2.0
+
+A UX release. No new measurement, no new indicator, no new claim — the
+arithmetic, the market context and the research position are byte-for-byte the
+same product. What changed is how much you have to understand before you can use
+it.
+
+### Changed
+
+- **Four controls make a trade plan: Direction, Stop price, Account equity, Risk
+  (%).** Everything else has a default, and the defaults are the common case:
+  entry follows the current price, the target sits at 2R, risk is a percentage of
+  equity, costs are in the sizing, and the position is not open yet. The settings
+  dialog now opens on two short groups — `Trade plan` and `Account` — holding
+  five controls between them including the enable switch. It previously opened on
+  fifteen.
+- **Five mode dropdowns are gone**, not hidden: `Stage`, `Entry`, `Stop`,
+  `Target` and `Risk per trade`. Each asked a first-time user to learn an
+  internal distinction before they could size a trade. Where two behaviours
+  exist, there is now a checkbox that says what it does — `Use manual entry`,
+  `Use ATR stop`, `Use custom target`, `Use fixed cash risk`, `Position opened`.
+  A greyed-out input is still an input the eye has to skip, so the fix was fewer
+  declarations rather than more `active =`.
+- **`Stage` became `Position opened`.** Planning and Active are still the
+  internal states and still what the panel prints as status — but status is an
+  output, and choosing between two engineering words was never the user's job.
+  Opening the position now switches the entry to the fill price rather than
+  leaving the two settings free to disagree, so v1.1's `Active needs the price
+  you actually filled at` block cannot arise: the configuration that produced it
+  no longer exists.
+- **Nothing is sized without a stop.** The ATR stop is available and off by
+  default rather than being what happens when you leave the field alone. A stop
+  the tool chose would read as the tool deciding where your idea is wrong, which
+  is the one decision it has no business making. With no stop the panel says
+  `SET STOP` and computes nothing.
+- **Settings are grouped by who needs them**: `Trade plan`, `Account`, then
+  `Advanced — plan`, `Advanced — risk`, `Advanced — costs`, and the display,
+  alert and symbol groups after those. The word "Advanced" is now load-bearing:
+  no group carrying it has to be opened to size a trade.
+- **Incomplete is not an error.** `SET STOP` and `SET ACTUAL FILL PRICE` name the
+  next action rather than reporting an invalid plan. Both still refuse to produce
+  a number, which is the part that matters.
+- Tooltips on the four core controls are written for someone who has never read
+  this repository.
+
+### Unchanged
+
+Cost-aware sizing, break-even, gross and net R, live R and P&L, the exposure cap,
+tick rounding, plan alerts and their stage semantics, the risk/reward drawings,
+the adaptive palette, 5m/15m/1H/4H behaviour, the confirmed 4H context with no
+lookahead or repaint, the external adapter contract, and every research
+constant — all verified identical by the same suite that verified them in v1.1.
+
 ## 1.1.0
 
 A plan-first release. Nothing in it claims to predict anything: every addition
