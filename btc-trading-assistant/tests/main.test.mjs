@@ -9,7 +9,7 @@
 import {
   rows, run, ser, eq, check, note, section, fin, CHART, ALT,
   BASE, PROD, RAW, HASH, rewrite, enable, extMaster, wire, asMode, setConst,
-  symOverride, chartStandard, readTable, bser, decode, branchTypeLint, buildSeries,
+  symOverride, chartStandard, visibleRight, readTable, bser, decode, branchTypeLint, buildSeries,
 } from './harness.mjs';
 import { instrument, hookNames, missingSymbols } from './build-instrumented.mjs';
 
@@ -527,8 +527,10 @@ export async function panelChecks() {
   // current-price label draws straight across a panel placed there, which is
   // what a real screenshot showed. Nothing offline can see that, so what is
   // asserted is the default that avoids it.
-  check(/input\.string\("Top left", "Position"/.test(RAW), 'the dashboard defaults to the left, away from the price scale');
-  check(!/input\.string\("Top right", "Position"/.test(RAW), '...and no longer to Top right, where the current-price label crosses it');
+  const posDefault = (RAW.match(/input\.string\("([^"]+)", "Position"/) ?? [])[1];
+  check(posDefault === 'Middle right', `the dashboard defaults to ${posDefault}`);
+  check(!/^Top /.test(posDefault), '...not either top corner, where the symbol and OHLC header draws over it');
+  check(/tblPos == "Middle right"/.test(RAW) || /position\.middle_right/.test(RAW), 'and the default maps to a real Pine position constant');
   const [dec, det, dbg] = await Promise.all([
     run(rows, { source: BASE }),
     run(rows, { source: asMode(BASE, 'Detailed') }),
@@ -1038,21 +1040,31 @@ export async function geometryChecks() {
   // ---- structure, against the shipped file ---------------------------------
   const boxNew = RAW.match(/box\.new\([^\n]*\)/)[0];
   check(!/extend\s*=\s*extend\./.test(boxNew), 'the filled boxes carry no extend — a plan is finite, a regime is not');
-  check(/line\.new\([^\n]*extend = extend\.right/.test(RAW), '...while the level LINES still extend, because a level is a price and prices carry on');
+  check(/line\.new\([^\n]*extend = extend\.both/.test(RAW), '...while the level LINES extend BOTH ways, because a price is true across the whole chart');
   const planBars = +(RAW.match(/^PLAN_BARS = (\d+)/m) ?? [])[1];
   check(planBars >= 8 && planBars <= 40, `the plan reaches ${planBars} chart bars into the future, a fixed default rather than a setting`);
-  check(/^boxL  = time$/m.test(RAW), 'the boxes start AT the last bar');
-  check(/^boxR  = time \+ PLAN_BARS \* barMs$/m.test(RAW), '...and stop a bounded number of bars later');
-  check(/^lineL = time - 40 \* barMs$/m.test(RAW), 'only the lines reach backwards, and they are thin');
+  check(/^boxR  = anchorR$/m.test(RAW), 'the boxes hang off the right edge of the VIEWPORT, so scrolling does not strand the plan');
+  check(/^boxL  = anchorR - PLAN_BARS \* barMs$/m.test(RAW), '...and reach back a bounded number of bars from it');
+  check(/^visRight = chart\.right_visible_bar_time$/m.test(RAW) && /^anchorR  = na\(visRight\) \? time : visRight$/m.test(RAW),
+    'a runtime that reports no visible range anchors on the last bar instead of erroring');
 
   // ---- the coordinates themselves ------------------------------------------
   const longCtx = await run(sample, { source: plan({ entry: 60000, stop: 58000 }) });
   const g = (c, k) => ser(c, k)[i];
   const t = sample[i].t;
-  check(g(longCtx, 't_boxL') === t, 'box left edge is the last bar, not 40 bars of history');
-  check(g(longCtx, 't_boxR') === t + 16 * H4, `box right edge is finite and ${planBars} bars out`);
+  check(g(longCtx, 't_boxR') === t, 'with no visible range reported, the box anchors on the last bar');
+  check(g(longCtx, 't_boxL') === t - 16 * H4, `...and is exactly ${planBars} bars wide`);
   check(g(longCtx, 't_boxR') > g(longCtx, 't_boxL'), 'and the box has positive width, so it is a box');
-  check(g(longCtx, 't_lineL') === t - 40 * H4, 'the level lines still start behind the current bar');
+
+  // THE FOLLOWING BEHAVIOUR. The complaint this answers is that scrolling back
+  // through history left the plan behind at the last bar. Substituting the
+  // viewport's right edge is the only way to see that the box moved with it.
+  const scrolled = t - 300 * H4;
+  const back = await run(sample, { source: visibleRight(plan({ entry: 60000, stop: 58000 }), String(scrolled)) });
+  check(g(back, 't_boxR') === scrolled, 'scrolled back 300 bars, the box follows the viewport rather than staying at the last bar');
+  check(g(back, 't_boxL') === scrolled - 16 * H4, '...still exactly 16 bars wide, so it reads as the same object');
+  check(g(back, 't_rskTop') === g(longCtx, 't_rskTop') && g(back, 't_rwdTop') === g(longCtx, 't_rwdTop'),
+    '...and at the same prices — scrolling moves where the plan is drawn, never what it says');
 
   // ---- vertical semantics, stated per direction ----------------------------
   // math.max/math.min over the same two prices gives the same numbers. These
@@ -1082,11 +1094,15 @@ export async function geometryChecks() {
   // This is the default Planning flow: entry follows the market, so entry, the
   // 2R target, the size and all four box edges change on every bar. What must
   // NOT change is the object count.
+  // What must move every bar is the PRICES: entry follows the market, so the 2R
+  // target and the entry edge the two boxes share move with it. The x-anchor
+  // deliberately does NOT move per bar any more — it moves with the viewport,
+  // which is what the scroll check above proves.
   const live = await run(sample, { source: plan({ stop: 58000 }) });
-  const movedL = new Set(fin(ser(live, 't_boxL'))).size;
   const movedTop = new Set(fin(ser(live, 't_rwdTop'))).size;
-  check(movedL > 100, `a live-entry plan moves its geometry every bar (${movedL} distinct left edges)`);
-  check(movedTop > 100, `...including the 2R target, which follows the entry (${movedTop} distinct reward tops)`);
+  const movedShared = new Set(fin(ser(live, 't_rskTop'))).size;
+  check(movedTop > 100, `a live-entry plan moves its box prices every bar (${movedTop} distinct reward tops)`);
+  check(movedShared > 100, `...including the entry edge the two boxes share (${movedShared} distinct risk tops)`);
   const boxNews = (RAW.match(/box\.new\(/g) ?? []).length;
   const lineNews = (RAW.match(/line\.new\(/g) ?? []).length;
   check(boxNews === 1 && lineNews === 1, 'and it does so through one box.new() and one line.new() call site, both guarded by na()');

@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.2.2
+
+A second pass over v1.2.1's visuals, driven the same way: by looking at a real
+chart rather than at a test run.
+
+### Fixed
+
+- **The dashboard defaults to `Middle right`.** v1.2.1 moved it to `Top left` to
+  get out from under the price scale; on a real chart that put it under
+  TradingView's symbol and OHLC header instead. The top of the chart is covered
+  by the header, the right is crossed by the current-price label — so the
+  default now avoids the header, which is fixed, and accepts the label, which
+  moves with price. No position on a TradingView chart is collision-free, and
+  this file has now claimed otherwise twice; it does not claim it again.
+- **The plan drawings stayed behind when you scrolled.** Anchored to the last
+  bar, the risk/reward boxes left the screen as soon as you panned back through
+  history, and the level lines ran out 40 bars behind it — so scrolling to look
+  at what happened before the trade meant losing the picture of the trade.
+
+  The boxes now hang off `chart.right_visible_bar_time`, the right edge of what
+  you are actually looking at, and reach `PLAN_BARS` back from it. Scroll
+  anywhere and the plan is on screen, at the same prices. The level lines
+  changed from `extend.right` to `extend.both`, because a price is true across
+  the whole chart.
+
+### Notes
+
+**Reading the visible range has a cost, and it is not small.** TradingView
+re-executes the entire script on every scroll and zoom — 13 `request.security`
+calls and a 2,190-bar percentile each time — whether or not a plan is enabled.
+That is what the boxes staying on screen costs. Manual item 21 (runtime
+performance on a long 5m chart) matters more because of it.
+
+A runtime that reports no visible range anchors on the last bar rather than
+erroring. The offline suite substitutes that one read site to test the following
+behaviour instead of assuming it.
+
 ## 1.2.1
 
 Two things looked wrong in the TradingView Pine Editor that no offline test could
@@ -47,7 +84,7 @@ thing to understand for no decision it changes.
 
 Manual validation matters more than usual for this one — it was driven by
 rendering, and rendering is the thing the offline runtime does not do. See
-`TRADINGVIEW-VALIDATION.md` items 30–37.
+`TRADINGVIEW-VALIDATION.md` items 30–39.
 
 ## 1.2.0
 

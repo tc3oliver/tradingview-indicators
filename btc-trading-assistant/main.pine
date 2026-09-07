@@ -218,7 +218,7 @@ showTable = input.bool(true, "Dashboard", group = G_UI)
 // modes, which the test suite asserts bar by bar.
 dispMode  = input.string("Decision", "Detail level", options = ["Decision", "Detailed", "Debug"], group = G_UI, tooltip = "Decision: the market in three lines and your trade plan. No z-scores, no percentiles, no research vocabulary.\n\nDetailed: every measure with its raw value, percentile and σ, every feed's freshness, and the event list.\n\nDebug: Detailed plus sample counts, exact σ, status codes and internal state codes.")
 panelSize = input.string("Normal", "Panel size", options = ["Compact", "Normal", "Large"], group = G_UI)
-tblPos    = input.string("Top left", "Position", options = ["Top left", "Middle left", "Bottom left", "Top right", "Middle right", "Bottom right"], group = G_UI, tooltip = "Top left by default because the RIGHT side of a TradingView chart belongs to the price scale: the current-price label and the scale ticks draw over anything placed there. The right-hand positions are kept because a different layout may suit you, not because they are collision-free.")
+tblPos    = input.string("Middle right", "Position", options = ["Middle right", "Bottom right", "Top right", "Middle left", "Bottom left", "Top left"], group = G_UI, tooltip = "Middle right by default, arrived at by trying the other two on a real chart. The TOP of the chart carries the symbol and OHLC header, which covers a panel placed in either top corner. The right side carries the price scale, whose current-price label follows price and can cross a panel at any height.\n\nMiddle right avoids the header, which is fixed, and accepts the label, which is not: no position on this chart is collision-free, and one that moves is easier to live with than one that is always wrong.")
 showViz   = input.bool(true, "Draw the plan on the chart", group = G_UI, active = planOn)
 showR     = input.bool(true, "  1R / 2R / 3R reference lines", group = G_UI, active = planOn and showViz)
 showBE    = input.bool(true, "  Break-even line", group = G_UI, active = planOn and showViz)
@@ -1777,7 +1777,7 @@ CLEAR = color.new(color.gray, 100)
 lvlLine(ln, x1, p, col, sty, w) =>
     line l = ln
     if na(l)
-        l := line.new(x1, p, x1 + 1, p, xloc = xloc.bar_time, extend = extend.right, color = col, style = sty, width = w)
+        l := line.new(x1, p, x1 + 1, p, xloc = xloc.bar_time, extend = extend.both, color = col, style = sty, width = w)
     line.set_xy1(l, x1, na(p) ? 0.0 : p)
     line.set_xy2(l, x1 + 1, na(p) ? 0.0 : p)
     line.set_color(l, na(p) ? CLEAR : col)
@@ -1804,11 +1804,31 @@ zoneBox(bx, xL, xR, top, bot, bg) =>
 // plotted. Box coordinates that no test can see are box coordinates that will one
 // day be wrong in a screenshot instead of in a test run.
 barMs = chartSec * 1000
-// Lines read as levels, so they start behind the current bar and run on. Boxes
-// read as the plan, so they start AT the last bar and stop.
+
+// VIEWPORT ANCHOR. A plan pinned to the last bar is stranded there: scroll back
+// through history and the risk/reward object leaves the screen, taking the only
+// picture of the trade with it. chart.right_visible_bar_time is the right edge of
+// what the user is ACTUALLY looking at, so the boxes follow the chart.
+//
+// It is na before TradingView has supplied a visible range, and na on any runtime
+// that does not implement it, so the last bar is the anchor of last resort rather
+// than an error. The offline suite substitutes this one line to test the
+// following behaviour, the same way it substitutes the syminfo.* reads.
+//
+// THE COST, STATED: reading it makes TradingView re-execute the whole script on
+// every scroll and zoom — 13 request.security calls and a 2,190-bar percentile
+// each time. That is the price of the boxes staying on screen, and it is paid on
+// every pan whether or not a plan is enabled.
+visRight = chart.right_visible_bar_time
+anchorR  = na(visRight) ? time : visRight
+
+// Levels extend BOTH ways. A price is true across the whole chart, and a level
+// that stops 40 bars back is a level you lose the moment you scroll to look at
+// what happened before the trade.
 lineL = time - 40 * barMs
-boxL  = time
-boxR  = time + PLAN_BARS * barMs
+// The boxes hang off the right edge of the viewport and reach back PLAN_BARS.
+boxR  = anchorR
+boxL  = anchorR - PLAN_BARS * barMs
 vizOn = showViz and planOK
 
 // VERTICAL SEMANTICS, WRITTEN OUT PER DIRECTION. math.max/math.min over the same

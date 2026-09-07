@@ -8,7 +8,7 @@ values this version reasons about come back `na`. This file separates what is
 verified automatically from what still needs the Pine Editor.
 
 **Current status: MANUAL VALIDATION REQUIRED.** No item in the second table has
-been performed on v1.2.1. Nothing in this repository should be read as "fully
+been performed on v1.2.2. Nothing in this repository should be read as "fully
 validated" until they have been.
 
 v1.2 changed the settings dialog and nothing else, which makes it the release
@@ -22,7 +22,7 @@ the dashboard sat under the price scale's current-price label, and the risk /
 reward boxes carried `extend.right`, painting a permanent coloured background
 across the chart instead of marking a plan. Neither was a number, so nothing
 offline could see either one. Both are fixed, both now have structural
-assertions and coordinate assertions — and items 30–37 exist because those
+assertions and coordinate assertions — and items 30–39 exist because those
 assertions still cannot see a rendered pixel.
 
 ---
@@ -245,14 +245,16 @@ chart. **None has been performed.**
 | 27 | **Long and Short both produce a sane panel** from the same stop workflow, and the wrong-side guard still fires when the stop is on the wrong side | Asserted offline as arithmetic; unverified as an interaction. |
 | 28 | **`Position opened` on with no fill price** shows `SET ACTUAL FILL PRICE` and no live R, and setting the fill switches the panel to ACTIVE | The state machine and the panel text are asserted offline. What is unverified is that `Actual fill price` renders as a draggable marker and that the transition is legible while it happens. |
 | 29 | **Each Advanced override behaves in the dialog** — `Use manual entry`, `Use ATR stop`, `Use custom target`, `Use fixed cash risk` — including that the input each one supersedes reads as superseded | `Stop price` and `Target (R)` are deliberately *not* greyed out when their Advanced override is on, because the group ordering that would allow it would push Advanced above Trade plan. The checkbox label is the only thing telling the user the field is now ignored. Confirm that reads clearly, or accept it as a known rough edge. |
-| 30 | **Dashboard at the default Top left does not collide** with the symbol / OHLC header, the drawing toolbar, or anything else TradingView renders in that corner. If it does, fall back to **Middle left** | The offline runtime renders nothing. The default was changed *because* of a screenshot, and the replacement has not itself been seen on a chart. This is the item most likely to need a second change. |
-| 31 | **The current-price label no longer crosses the dashboard** — check on **5m, 15m, 1H and 4H desktop charts**, since the label's vertical position moves with price and the panel's height moves with content | The collision that prompted this patch. Nothing about the price scale exists offline. |
+| 30 | **Dashboard at the default Middle right clears the symbol / OHLC header** at the top of the chart | This item has now been wrong twice. v1.2.0 defaulted to `Top right` and the price-scale label crossed it; v1.2.1 moved to `Top left` and the OHLC header covered it. `Middle right` is the third attempt and has not itself been seen on a chart. Offline nothing is rendered, so nothing here can be settled without looking. |
+| 31 | **How often the current-price label crosses the panel in practice** — check on **5m, 15m, 1H and 4H desktop charts**, over a session, since the label tracks price and the panel's height tracks content | The right-hand side cannot be made collision-free: the label moves. What is being judged is whether an intermittent overlap is acceptable against a permanent one, which is a judgement, not an assertion. If it is not, the honest answer is `Middle left`, not another claim about the right. |
 | 32 | **Risk / reward boxes occupy a compact region to the right of the last bar** and do not extend to the edge of the chart | `extend` is absent from `box.new()` and the coordinates are asserted, but whether 16 bars *looks* right on each timeframe is a visual judgement. |
 | 33 | **LONG: the green area is entry→target above, the red area entry→stop below.** **SHORT: red above, green below** | Asserted numerically per direction. What is unverified is that Pine draws a box whose top is below its bottom the way this code assumes it never has to. |
-| 34 | **Scrolling and zooming** — the boxes stay attached to the last bar and do not smear, tear or vanish; `xloc.bar_time` behaves at the right-hand edge where future bar times do not exist yet | Box coordinates project **past the last bar**, into bar times that have not happened. `xloc.bar_time` is documented to handle this; it is not modelled offline at all. |
-| 35 | **Dragging the stop** redraws both boxes cleanly, with no ghost objects left behind, over many drags | Object identity is proven structurally (one `box.new()` behind an `na` guard, nine persistent handles). Pine's actual redraw behaviour under repeated input changes is not. |
-| 36 | **Switching Long ↔ Short** flips the box assignment on screen without leaving the previous orientation behind | Same reason. |
-| 37 | **Both themes** — the 92%-transparent fills are visible but do not dominate the candles on dark *or* light. Confirm the red and green are still distinguishable at that opacity | Opacity has no offline meaning, and `chart.bg_color` is stubbed, so only one side of the `isDark` branch is ever taken. This is a judgement about legibility that no assertion can make. |
+| 34 | **Scrolling and zooming** — the boxes follow the right edge of the viewport, stay 16 bars wide, and do not smear, tear or lag a frame behind the pan | `chart.right_visible_bar_time` has no offline equivalent; the suite substitutes it to prove the boxes *move with it*, which is a different claim from "TradingView updates them smoothly". Watch specifically for the boxes lagging or flickering during a fast pan. |
+| 35 | **The performance cost of reading the visible range**, on a long 5m chart | Reading `chart.right_visible_bar_time` makes TradingView re-execute the whole script on every scroll and zoom — 13 `request.security` calls and a 2,190-bar percentile each time, whether or not a plan is enabled. This is the one change in v1.2.2 that could make the indicator feel slow, and nothing offline can measure it. If panning is visibly laggy, the boxes should go back to a last-bar anchor. |
+| 36 | **The level lines now `extend.both`** — confirm they are visible across the whole chart at every zoom level and do not obscure old price action at 92% opacity... they are lines, so check they read as reference rather than as clutter | Line rendering and visual weight are not modelled offline. |
+| 37 | **Dragging the stop** redraws both boxes cleanly, with no ghost objects left behind, over many drags | Object identity is proven structurally (one `box.new()` behind an `na` guard, nine persistent handles). Pine's actual redraw behaviour under repeated input changes is not. |
+| 38 | **Switching Long ↔ Short** flips the box assignment on screen without leaving the previous orientation behind | Same reason. |
+| 39 | **Both themes** — the 92%-transparent fills are visible but do not dominate the candles on dark *or* light. Confirm the red and green are still distinguishable at that opacity | Opacity has no offline meaning, and `chart.bg_color` is stubbed, so only one side of the `isDark` branch is ever taken. This is a judgement about legibility that no assertion can make. |
 
 ---
 

@@ -178,11 +178,18 @@ lost at the stop is slightly **more** than 1R.
 
 **Panel size** is Compact / Normal / Large, and scales the Decision view.
 
-**Position** defaults to **Top left**. The right-hand side of a TradingView chart
-belongs to the price scale: the current-price label and the scale ticks draw over
-anything placed there, which is what a real screenshot showed. The right-hand
-positions are still offered because a different layout may suit your chart — not
-because they are collision-free.
+**Position** defaults to **Middle right**, arrived at by trying the alternatives
+on a real chart rather than by reasoning about them.
+
+The **top** of the chart carries TradingView's symbol and OHLC header, which
+covers a panel in either top corner. The **right** carries the price scale, whose
+current-price label follows price and can cross a panel at any height. Middle
+right avoids the header, which is fixed, and accepts the label, which is not: no
+position on a TradingView chart is collision-free, and an obstruction that moves
+away is easier to live with than one that is always there.
+
+All six positions are offered. If your layout differs — a hidden price scale, a
+different header setting — pick whatever suits it.
 
 The mode is presentation only. It selects which rows are drawn and reaches no
 measurement, threshold, state definition, event or alert — every observable
@@ -259,21 +266,28 @@ measure a live R from, and would report +0.00R forever while the position moved.
 ### On the chart
 
 Entry, stop and target are drawn as solid lines; the 1R/2R/3R ladder as thin
-dashed reference lines; break-even as a dotted line. The lines start behind the
-current bar and carry on to the right, because a level is a price.
+dashed reference lines; break-even as a dotted line. They span the whole chart,
+because a price is true everywhere on it.
 
 Two faint boxes shade the **risk zone** (entry to stop) and the **reward zone**
-(entry to target). They start at the last bar and stop **16 chart bars** later:
+(entry to target). They are **16 chart bars** wide and hang off the right edge of
+whatever you are looking at, so scrolling back through history does not leave the
+plan stranded at the last bar:
 
 ```
                      ┌─────────────┐  TARGET
                      │ reward      │
-    ENTRY ───────────┼─────────────┤
+◄─── ENTRY ──────────┼─────────────┤ ───►
                      │ risk        │
                      └─────────────┘  STOP
                      ↑             ↑
-                  last bar    +16 bars
+                 −16 bars     visible right edge
 ```
+
+The lines extend both ways and are always visible; the boxes follow the
+viewport. Reading TradingView's visible range makes it re-execute the script on
+every scroll and zoom, which is a real cost on a long lower-timeframe chart —
+that is the price of the plan staying on screen.
 
 They are deliberately finite. Until v1.2.1 they carried `extend.right`, which on
 a real chart is not a zone at all — it is a permanent coloured background over
