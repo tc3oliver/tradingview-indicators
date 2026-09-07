@@ -45,6 +45,14 @@ const SCALARS = [
   ['liveR', 't_liveR'], ['livePnlGross', 't_pnlGross'], ['livePnlNet', 't_pnlNet'],
   ['toStopR', 't_toStopR'], ['toTargetR', 't_toTargetR'], ['toEntryR', 't_toEntryR'],
   ['minQty', 't_minQty'],
+  // --- plan drawing geometry ---
+  // Box coordinates are plotted rather than read back off the drawing objects
+  // because the offline runtime does not expose them. They are computed in chart
+  // scope in main.pine for exactly this reason: geometry no test can see is
+  // geometry that goes wrong in a screenshot instead of in a test run.
+  ['boxL', 't_boxL'], ['boxR', 't_boxR'], ['lineL', 't_lineL'],
+  ['rskTop', 't_rskTop'], ['rskBot', 't_rskBot'],
+  ['rwdTop', 't_rwdTop'], ['rwdBot', 't_rwdBot'],
 ];
 
 // Discrete state, packed. Not to save plots — the instrumented build has no

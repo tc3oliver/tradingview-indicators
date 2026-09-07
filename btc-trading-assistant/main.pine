@@ -218,7 +218,7 @@ showTable = input.bool(true, "Dashboard", group = G_UI)
 // modes, which the test suite asserts bar by bar.
 dispMode  = input.string("Decision", "Detail level", options = ["Decision", "Detailed", "Debug"], group = G_UI, tooltip = "Decision: the market in three lines and your trade plan. No z-scores, no percentiles, no research vocabulary.\n\nDetailed: every measure with its raw value, percentile and σ, every feed's freshness, and the event list.\n\nDebug: Detailed plus sample counts, exact σ, status codes and internal state codes.")
 panelSize = input.string("Normal", "Panel size", options = ["Compact", "Normal", "Large"], group = G_UI)
-tblPos    = input.string("Top right", "Position", options = ["Top right", "Middle right", "Bottom right", "Top left", "Bottom left"], group = G_UI)
+tblPos    = input.string("Top left", "Position", options = ["Top left", "Middle left", "Bottom left", "Top right", "Middle right", "Bottom right"], group = G_UI, tooltip = "Top left by default because the RIGHT side of a TradingView chart belongs to the price scale: the current-price label and the scale ticks draw over anything placed there. The right-hand positions are kept because a different layout may suit you, not because they are collision-free.")
 showViz   = input.bool(true, "Draw the plan on the chart", group = G_UI, active = planOn)
 showR     = input.bool(true, "  1R / 2R / 3R reference lines", group = G_UI, active = planOn and showViz)
 showBE    = input.bool(true, "  Break-even line", group = G_UI, active = planOn and showViz)
@@ -1731,8 +1731,8 @@ cRef    = isDark ? #90A4AE : #607D8B
 cBE     = isDark ? #B0BEC5 : #546E7A
 // Zone fills are deliberately faint. A risk box that dominates the chart hides
 // the thing it is drawn on.
-cRiskBg = color.new(cStop, 90)
-cRwdBg  = color.new(cTgt, 90)
+cRiskBg = color.new(cStop, 92)
+cRwdBg  = color.new(cTgt, 92)
 
 // Panel colours. Text is the chart's own foreground so it stays legible whatever
 // the user's theme does; backgrounds are tinted from it rather than hard-coded
@@ -1756,6 +1756,12 @@ cZebra  = color.new(chart.fg_color, 92)
 //
 // A level that should not be shown is drawn fully transparent rather than
 // deleted, so the object identity — and therefore the count — never changes.
+// How far into the future the risk/reward boxes reach, in chart bars. A fixed
+// number rather than a setting: 16 bars is ~80 minutes at 5m and ~2.7 days at 4H,
+// which reads as "the plan" on every timeframe this script runs on, and a control
+// for it would be one more thing to understand for no decision it changes.
+PLAN_BARS = 16
+
 var line lnEntry = na
 var line lnStop  = na
 var line lnTgt   = na
@@ -1779,41 +1785,69 @@ lvlLine(ln, x1, p, col, sty, w) =>
     line.set_width(l, w)
     l
 
-zoneBox(bx, x1, top, bot, bg) =>
+// The boxes take an explicit right edge. They used to carry extend.right, and on
+// a real chart that is not a zone — it is a permanent coloured background over
+// everything to the right of the plan, which buries the candles it is supposed
+// to sit behind. A trade plan is a compact object near the current price.
+zoneBox(bx, xL, xR, top, bot, bg) =>
     box b = bx
     if na(b)
-        b := box.new(x1, top, x1 + 1, bot, xloc = xloc.bar_time, extend = extend.right, border_color = CLEAR, bgcolor = bg)
-    box.set_lefttop(b, x1, na(top) ? 0.0 : top)
-    box.set_rightbottom(b, x1 + 1, na(bot) ? 0.0 : bot)
+        b := box.new(xL, top, xR, bot, xloc = xloc.bar_time, border_color = CLEAR, bgcolor = bg)
+    box.set_lefttop(b, xL, na(top) ? 0.0 : top)
+    box.set_rightbottom(b, xR, na(bot) ? 0.0 : bot)
     box.set_bgcolor(b, na(top) or na(bot) ? CLEAR : bg)
     b
 
+// GEOMETRY, computed in chart scope. It could all live inside the last-bar block
+// below, but then none of it would be observable: the offline suite reads plotted
+// series, and a value that exists only inside `if barstate.islast` cannot be
+// plotted. Box coordinates that no test can see are box coordinates that will one
+// day be wrong in a screenshot instead of in a test run.
+barMs = chartSec * 1000
+// Lines read as levels, so they start behind the current bar and run on. Boxes
+// read as the plan, so they start AT the last bar and stop.
+lineL = time - 40 * barMs
+boxL  = time
+boxR  = time + PLAN_BARS * barMs
+vizOn = showViz and planOK
+
+// VERTICAL SEMANTICS, WRITTEN OUT PER DIRECTION. math.max/math.min over the same
+// two prices produces identical numbers and is shorter, which is exactly the
+// problem: it is correct by accident of ordering rather than by saying what the
+// box means. Written this way, a sign error is a test failure with a name on it.
+//
+//                    TARGET  ─────────────
+//                            │ reward       top = target, bottom = entry (long)
+//   ENTRY  ─────────────────┼─────────────
+//                            │ risk         top = entry,  bottom = stop  (long)
+//                      STOP  ─────────────
+rskTop = vizOn ? (isLong ? rt(entryPx) : rt(stopPx))  : na
+rskBot = vizOn ? (isLong ? rt(stopPx)  : rt(entryPx)) : na
+rwdTop = vizOn and tgtOK ? (isLong ? rt(tgtPx)   : rt(entryPx)) : na
+rwdBot = vizOn and tgtOK ? (isLong ? rt(entryPx) : rt(tgtPx))   : na
+
 // Drawings are rebuilt only on the last bar. On every earlier bar they would be
 // invisible work: a horizontal level extended to the right is fully described by
-// its price, and the price only matters once.
+// its price, and the price only matters once. With a live entry the plan moves
+// every bar, and every object below is MOVED rather than replaced, so the count
+// is the same after a week of 5m bars as it is on the first one.
 if barstate.islast
-    // Start the levels a little to the left of the current bar so they read as
-    // levels rather than as something anchored to one candle.
-    barMs = chartSec * 1000
-    x0    = time - 40 * barMs
-    vizOn = showViz and planOK
-
-    lnEntry := lvlLine(lnEntry, x0, vizOn ? rt(entryPx) : na, cEntry, line.style_solid, 2)
-    lnStop  := lvlLine(lnStop,  x0, vizOn ? rt(stopPx)  : na, cStop,  line.style_solid, 2)
-    lnTgt   := lvlLine(lnTgt,   x0, vizOn and tgtOK ? rt(tgtPx) : na, cTgt, line.style_solid, 2)
-    lnBE    := lvlLine(lnBE,    x0, vizOn and showBE ? rt(bePx) : na, cBE, line.style_dotted, 1)
+    lnEntry := lvlLine(lnEntry, lineL, vizOn ? rt(entryPx) : na, cEntry, line.style_solid, 2)
+    lnStop  := lvlLine(lnStop,  lineL, vizOn ? rt(stopPx)  : na, cStop,  line.style_solid, 2)
+    lnTgt   := lvlLine(lnTgt,   lineL, vizOn and tgtOK ? rt(tgtPx) : na, cTgt, line.style_solid, 2)
+    lnBE    := lvlLine(lnBE,    lineL, vizOn and showBE ? rt(bePx) : na, cBE, line.style_dotted, 1)
     // The R ladder is REFERENCE, so it is thin and dashed and never competes with
     // the three levels that are actually part of the plan. The selected target is
     // the emphasised one, and it is drawn separately above.
-    lnR1 := lvlLine(lnR1, x0, vizOn and showR ? rt(r1) : na, color.new(cRef, 45), line.style_dashed, 1)
-    lnR2 := lvlLine(lnR2, x0, vizOn and showR ? rt(r2) : na, color.new(cRef, 55), line.style_dashed, 1)
-    lnR3 := lvlLine(lnR3, x0, vizOn and showR ? rt(r3) : na, color.new(cRef, 65), line.style_dashed, 1)
+    lnR1 := lvlLine(lnR1, lineL, vizOn and showR ? rt(r1) : na, color.new(cRef, 45), line.style_dashed, 1)
+    lnR2 := lvlLine(lnR2, lineL, vizOn and showR ? rt(r2) : na, color.new(cRef, 55), line.style_dashed, 1)
+    lnR3 := lvlLine(lnR3, lineL, vizOn and showR ? rt(r3) : na, color.new(cRef, 65), line.style_dashed, 1)
 
     // Risk zone: entry to stop. Reward zone: entry to the selected target. Two
-    // boxes, low opacity, so the shape of the trade is readable at a glance
-    // without burying the candles.
-    bxRisk := zoneBox(bxRisk, x0, vizOn ? math.max(rt(entryPx), rt(stopPx)) : na, vizOn ? math.min(rt(entryPx), rt(stopPx)) : na, cRiskBg)
-    bxRwd  := zoneBox(bxRwd,  x0, vizOn and tgtOK ? math.max(rt(entryPx), rt(tgtPx)) : na, vizOn and tgtOK ? math.min(rt(entryPx), rt(tgtPx)) : na, cRwdBg)
+    // faint boxes over a finite span of future bars, so the shape of the trade is
+    // readable at a glance and the candles are still the thing you are looking at.
+    bxRisk := zoneBox(bxRisk, boxL, boxR, rskTop, rskBot, cRiskBg)
+    bxRwd  := zoneBox(bxRwd,  boxL, boxR, rwdTop, rwdBot, cRwdBg)
 
 // ============================================================== 23. table ====
 // Worst case is the Debug panel: the full Detailed layout plus the debug block.
@@ -1896,9 +1930,18 @@ ctxOneLine = kTrendWord + " · " + (na(volPct) ? "vol n/a" : str.lower(kVolWord)
 ctxAge     = ctxAgeTxt(ctxAgeMs)
 healthWord = not coreOK or oiLooksNotional ? "DATA ISSUE" : "DATA OK"
 qtyTxt     = na(qty) ? "n/a" : str.tostring(qty, "#.####") + " " + syminfo.basecurrency
-stopPctTxt = na(stopDist) or na(entryPx) or entryPx <= 0 ? "" : str.tostring(stopDist / entryPx * 100, "#.##") + "% · " + str.tostring(stopDist / patr, "#.##") + " ATR"
-riskPctTxt = na(actRisk) or equity <= 0 ? "" : str.tostring(actRisk / equity * 100, "#.##") + "% · " + rAbs(riskR)
+// Two renderings of one number. Decision gets the percentage, which is what a
+// reader compares against their own tolerance; the ATR multiple is a research
+// unit and belongs with the rest of them in Detailed.
+stopPctOnly = na(stopDist) or na(entryPx) or entryPx <= 0 ? "" : str.tostring(stopDist / entryPx * 100, "#.##") + "%"
+stopPctTxt = na(stopDist) or na(entryPx) or entryPx <= 0 ? "" : stopPctOnly + " · " + str.tostring(stopDist / patr, "#.##") + " ATR"
+riskPctOnly = na(actRisk) or equity <= 0 ? "" : str.tostring(actRisk / equity * 100, "#.##") + "%"
+riskPctTxt = na(actRisk) or equity <= 0 ? "" : riskPctOnly + " · " + rAbs(riskR)
 tgtRTxt    = not tgtOK ? "" : "Gross " + rAbs(tgtGrossR) + " · Net " + rAbs(tgtNetR)
+// Decision prints the target's R and stops there. The net figure is added only
+// when costs move it by at least a tenth of an R — silence when the difference
+// rounds away, the number when it does not, which is the honest version of both.
+tgtRShort  = not tgtOK ? "" : rAbs(tgtGrossR) + (na(tgtNetR) or tgtGrossR - tgtNetR < 0.10 ? "" : " · net " + rAbs(tgtNetR))
 costTxt    = na(costStop) ? "" : rAbs(costLoadR)
 blockTxt   = blkInstr ? "Non-linear instrument — sizing assumes one quote unit per unit of price. Point value " + str.tostring(pointVal, "#.####") + "." : blkChart ? "Non-standard chart type. Its prices are synthetic — switch on Use manual entry to size from a real price." : ""
 
@@ -1911,7 +1954,7 @@ FOOTER = "DISCRETIONARY MODE · NO AUTO ENTRIES"
 int rowsUsed = 0
 var table dash = na
 if showTable and barstate.islast
-    pos = tblPos == "Top right" ? position.top_right : tblPos == "Middle right" ? position.middle_right : tblPos == "Bottom right" ? position.bottom_right : tblPos == "Top left" ? position.top_left : position.bottom_left
+    pos = tblPos == "Top left" ? position.top_left : tblPos == "Middle left" ? position.middle_left : tblPos == "Bottom left" ? position.bottom_left : tblPos == "Top right" ? position.top_right : tblPos == "Middle right" ? position.middle_right : position.bottom_right
     // Rebuilt rather than mutated: barstate.islast is true on every forming bar
     // and merged cells cannot be un-merged, so table.clear() alone would leave a
     // previous layout's merges behind and shear the next one.
@@ -2020,10 +2063,10 @@ if showTable and barstate.islast
                     r += 1
                 addRow(dash, r, "ENTRY", px(rt(entryPx)), entryLive ? "live" : posOpen ? "filled" : "planned", szBody)
                 r += 1
-                addRow(dash, r, "STOP", px(rt(stopPx)), stopPctTxt, szBody)
+                addRow(dash, r, "STOP", px(rt(stopPx)), stopPctOnly, szBody)
                 r += 1
                 if tgtOK
-                    addRow(dash, r, "TARGET", px(rt(tgtPx)), tgtRTxt, szBody)
+                    addRow(dash, r, "TARGET", px(rt(tgtPx)), tgtRShort, szBody)
                     r += 1
                 else
                     addRow(dash, r, "TARGET", "not set", useCustomTgt ? "set a custom target price" : "", szBody)
@@ -2034,12 +2077,17 @@ if showTable and barstate.islast
                     if tgtOK
                         addRow(dash, r, "TO TARGET", rAbs(toTargetR), "", szBody)
                         r += 1
-                else
+                // PRICE→ENTRY answers "how far is the market from where I said I
+                // would get in". With a live entry that distance is zero by
+                // construction, so the row would print +0.00R / $0 / 0.00% on
+                // every bar forever. A row that can only say one thing is not
+                // information, it is furniture.
+                else if not entryLive
                     addRow(dash, r, "PRICE→ENTRY", rStr(toEntryR), susd(toEntryUsd) + " · " + (na(toEntryPct) ? "" : str.tostring(toEntryPct, "#.##") + "%"), szBody)
                     r += 1
-                addRow(dash, r, "SIZE", qtyTxt, usd(notional), szBody)
+                addRow(dash, r, "POSITION", usd(notional), qtyTxt, szBody)
                 r += 1
-                addRow(dash, r, "RISK", usd(actRisk), riskPctTxt + (capped ? "  ·  SIZE CAPPED" : ""), szBody)
+                addRow(dash, r, "MAX LOSS", usd(actRisk), riskPctOnly + (capped ? "  ·  SIZE CAPPED" : ""), szBody)
                 r += 1
                 if capped
                     addRow(dash, r, "", "requested " + usd(riskBudget), "capped at " + str.tostring(maxLev, "#.#") + "x equity", szRef)

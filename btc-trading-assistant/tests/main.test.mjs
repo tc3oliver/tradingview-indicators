@@ -499,9 +499,15 @@ export async function panelChecks() {
   check(/\bLONG\b/.test(wp), 'a direction appears only once the user has entered one');
   check(withPlan[0].includes('BTC TRADE PLAN'), '§16: with a plan on, the PLAN is the first thing on the panel');
   check(/4H CONTEXT/.test(wp) && /·/.test(wp), '§16: ...and the market context compresses to a single line');
-  for (const row of ['ENTRY', 'STOP', 'TARGET', 'SIZE', 'RISK', 'COST', 'BREAKEVEN', 'PRICE→ENTRY']) {
+  for (const row of ['ENTRY', 'STOP', 'TARGET', 'POSITION', 'MAX LOSS', 'COST', 'BREAKEVEN', 'PRICE→ENTRY']) {
     check(wp.includes(row), `Planning view shows ${row}`);
   }
+  // Renamed from SIZE and RISK after a real screenshot: "SIZE 0.0139 BTC" reads
+  // as the smaller number of the two, and "RISK" is the word every other row on
+  // the panel is also about. POSITION leads with the money; MAX LOSS says what
+  // the number actually is.
+  check(!/\bSIZE\b(?!\s+CAPPED)/.test(wp) && !/^RISK/m.test(wp), 'Decision says POSITION and MAX LOSS, not SIZE and RISK');
+  check(!/ATR \d/.test(wp.split('4H CONTEXT')[0].split('STOP')[1] ?? ''), 'the Decision stop row carries a percentage, not an ATR multiple');
   check(/DISCRETIONARY MODE/.test(wp), 'the disclaimer survives an entered plan');
   const leaked2 = FORBIDDEN.filter((w) => wp.toLowerCase().includes(w.toLowerCase()));
   check(leaked2.length === 0, `Planning view carries no research vocabulary either (${leaked2.join(', ') || 'clean'})`);
@@ -517,6 +523,12 @@ export async function panelChecks() {
   const modes = RAW.match(/options = \["Decision", "Detailed", "Debug"\]/);
   check(modes !== null, 'exactly three display modes exist');
   check(/options = \["Compact", "Normal", "Large"\]/.test(RAW), '§19: three panel sizes exist');
+  // The right-hand side of a TradingView chart belongs to the price scale: the
+  // current-price label draws straight across a panel placed there, which is
+  // what a real screenshot showed. Nothing offline can see that, so what is
+  // asserted is the default that avoids it.
+  check(/input\.string\("Top left", "Position"/.test(RAW), 'the dashboard defaults to the left, away from the price scale');
+  check(!/input\.string\("Top right", "Position"/.test(RAW), '...and no longer to Top right, where the current-price label crosses it');
   const [dec, det, dbg] = await Promise.all([
     run(rows, { source: BASE }),
     run(rows, { source: asMode(BASE, 'Detailed') }),
@@ -874,7 +886,7 @@ export async function drawingChecks() {
   const vars = (RAW.match(/^var (line|box)\s+\w+\s+= na$/gm) ?? []).length;
   check(vars >= 9, `${vars} drawing handles are persistent vars, so the object count is fixed for the life of the script`);
   check(/^if barstate\.islast\n/m.test(RAW), 'drawings are updated on the last bar only, not rebuilt every bar');
-  check(/line\.set_xy1\(l, x1, /.test(RAW) && /box\.set_lefttop\(b, x1, /.test(RAW), 'existing objects are moved rather than replaced');
+  check(/line\.set_xy1\(l, x1, /.test(RAW) && /box\.set_lefttop\(b, xL, /.test(RAW), 'existing objects are moved rather than replaced');
   // A hidden level must not change the object count, or the ceiling becomes a
   // function of the user's settings.
   check(/CLEAR = color\.new\(color\.gray, 100\)/.test(RAW) && /na\(p\) \? CLEAR : col/.test(RAW),
@@ -1003,4 +1015,100 @@ export async function uxChecks() {
   check(/ACTIVE/.test(active) && /LIVE/.test(active) && /TO STOP/.test(active), 'Position opened ON reads as ACTIVE semantics');
   check(!/Stage/.test(planning) && !/Entry mode/i.test(planning) && !/Risk mode/i.test(planning),
     'the Decision panel names no internal mode — ACTIVE and PLANNING are status, not settings');
+}
+
+// ---------------------------------------------------------------------------
+// PLAN GEOMETRY. This section exists because of two real TradingView
+// screenshots, not because of a failing assertion — which is the point: none of
+// it was observable offline before, so nothing here could have caught either
+// bug. The boxes carried extend.right and started 40 bars in the past, which on
+// a real chart is not a zone but a permanent coloured background; and the panel
+// sat under the price scale's current-price label.
+//
+// The fix for both was structural, so the tests are structural too, plus the
+// coordinates themselves, which main.pine now computes in chart scope so they
+// can be plotted and read back.
+export async function geometryChecks() {
+  section('PLAN GEOMETRY — a compact object near price, not a background regime');
+
+  const sample = rows.slice(-200);
+  const i = sample.length - 1;
+  const H4 = 14_400_000;
+
+  // ---- structure, against the shipped file ---------------------------------
+  const boxNew = RAW.match(/box\.new\([^\n]*\)/)[0];
+  check(!/extend\s*=\s*extend\./.test(boxNew), 'the filled boxes carry no extend — a plan is finite, a regime is not');
+  check(/line\.new\([^\n]*extend = extend\.right/.test(RAW), '...while the level LINES still extend, because a level is a price and prices carry on');
+  const planBars = +(RAW.match(/^PLAN_BARS = (\d+)/m) ?? [])[1];
+  check(planBars >= 8 && planBars <= 40, `the plan reaches ${planBars} chart bars into the future, a fixed default rather than a setting`);
+  check(/^boxL  = time$/m.test(RAW), 'the boxes start AT the last bar');
+  check(/^boxR  = time \+ PLAN_BARS \* barMs$/m.test(RAW), '...and stop a bounded number of bars later');
+  check(/^lineL = time - 40 \* barMs$/m.test(RAW), 'only the lines reach backwards, and they are thin');
+
+  // ---- the coordinates themselves ------------------------------------------
+  const longCtx = await run(sample, { source: plan({ entry: 60000, stop: 58000 }) });
+  const g = (c, k) => ser(c, k)[i];
+  const t = sample[i].t;
+  check(g(longCtx, 't_boxL') === t, 'box left edge is the last bar, not 40 bars of history');
+  check(g(longCtx, 't_boxR') === t + 16 * H4, `box right edge is finite and ${planBars} bars out`);
+  check(g(longCtx, 't_boxR') > g(longCtx, 't_boxL'), 'and the box has positive width, so it is a box');
+  check(g(longCtx, 't_lineL') === t - 40 * H4, 'the level lines still start behind the current bar');
+
+  // ---- vertical semantics, stated per direction ----------------------------
+  // math.max/math.min over the same two prices gives the same numbers. These
+  // assertions are about which price is WHICH EDGE, which is the thing a future
+  // sign error would break silently.
+  const entry = 60000, stop = 58000, target = entry + 2 * (entry - stop);
+  check(g(longCtx, 't_rwdTop') === target, 'LONG: reward box top is the target');
+  check(g(longCtx, 't_rwdBot') === entry, 'LONG: reward box bottom is the entry');
+  check(g(longCtx, 't_rskTop') === entry, 'LONG: risk box top is the entry');
+  check(g(longCtx, 't_rskBot') === stop, 'LONG: risk box bottom is the stop');
+
+  const sEntry = 60000, sStop = 62000, sTarget = sEntry - 2 * (sStop - sEntry);
+  const shortCtx = await run(sample, { source: plan({ dir: 'Short', entry: sEntry, stop: sStop }) });
+  check(g(shortCtx, 't_rskTop') === sStop, 'SHORT: risk box top is the stop');
+  check(g(shortCtx, 't_rskBot') === sEntry, 'SHORT: risk box bottom is the entry');
+  check(g(shortCtx, 't_rwdTop') === sEntry, 'SHORT: reward box top is the entry');
+  check(g(shortCtx, 't_rwdBot') === sTarget, 'SHORT: reward box bottom is the target');
+
+  // ...and in both directions the two boxes meet at the entry and never overlap.
+  for (const [why, c] of [['long', longCtx], ['short', shortCtx]]) {
+    const [rt_, rb, wt, wb] = ['t_rskTop', 't_rskBot', 't_rwdTop', 't_rwdBot'].map((k) => g(c, k));
+    check(rt_ > rb && wt > wb, `${why}: each box has positive height, so top is above bottom`);
+    check(rt_ === wb || rb === wt, `${why}: the two boxes meet exactly at the entry, with no gap and no overlap`);
+  }
+
+  // ---- a live entry moves the plan every bar without leaking objects -------
+  // This is the default Planning flow: entry follows the market, so entry, the
+  // 2R target, the size and all four box edges change on every bar. What must
+  // NOT change is the object count.
+  const live = await run(sample, { source: plan({ stop: 58000 }) });
+  const movedL = new Set(fin(ser(live, 't_boxL'))).size;
+  const movedTop = new Set(fin(ser(live, 't_rwdTop'))).size;
+  check(movedL > 100, `a live-entry plan moves its geometry every bar (${movedL} distinct left edges)`);
+  check(movedTop > 100, `...including the 2R target, which follows the entry (${movedTop} distinct reward tops)`);
+  const boxNews = (RAW.match(/box\.new\(/g) ?? []).length;
+  const lineNews = (RAW.match(/line\.new\(/g) ?? []).length;
+  check(boxNews === 1 && lineNews === 1, 'and it does so through one box.new() and one line.new() call site, both guarded by na()');
+  const handles = (RAW.match(/^var (line|box)\s+\w+\s+= na$/gm) ?? []).length;
+  check(handles === 9, `${handles} persistent handles — 7 lines and 2 boxes, unchanged by this patch`);
+
+  // ---- the fills stay behind the candles -----------------------------------
+  const opacity = [...RAW.matchAll(/^c(Risk|Rwd)Bg\s*= color\.new\(\w+, (\d+)\)$/gm)].map((m) => +m[2]);
+  check(opacity.length === 2 && opacity.every((o) => o >= 88), `risk and reward fills are ${opacity.join(' / ')}% transparent — background, not subject`);
+
+  // ---- PRICE→ENTRY only when there is a distance to report -----------------
+  check(!/PRICE→ENTRY/.test(readTable(live).join('\n')),
+    'with a live entry the market IS the entry, so PRICE→ENTRY is absent rather than printing +0.00R forever');
+  check(/PRICE→ENTRY/.test(readTable(longCtx).join('\n')),
+    '...and present for a manual planned entry, where the distance is real');
+
+  // ---- the arithmetic did not move -----------------------------------------
+  // A visual patch that changed a number would be the worst possible outcome, so
+  // the plan is recomputed here against the same ground truth the planner suite
+  // uses, on the same case.
+  const want = { t_entry: 60000, t_stop: 58000, t_target: 64000, t_riskPerUnit: 2000 + 60000 * 0.0005 + 58000 * 0.0005 };
+  for (const [k, v] of Object.entries(want)) {
+    check(Math.abs(g(longCtx, k) - v) < 1e-9, `${k} unchanged by the visual patch (${g(longCtx, k)})`);
+  }
 }

@@ -8,13 +8,22 @@ values this version reasons about come back `na`. This file separates what is
 verified automatically from what still needs the Pine Editor.
 
 **Current status: MANUAL VALIDATION REQUIRED.** No item in the second table has
-been performed. Nobody has opened the Pine Editor on v1.2. Nothing in this
-repository should be read as "fully validated" until they have been.
+been performed on v1.2.1. Nothing in this repository should be read as "fully
+validated" until they have been.
 
 v1.2 changed the settings dialog and nothing else, which makes it the release
 where offline testing is *least* able to stand in for the Pine Editor: the whole
 deliverable is a dialog the offline runtime does not render. Items 24–29 exist
 for exactly that reason.
+
+**v1.2.1 is the proof of that point.** Someone opened the Pine Editor and two
+things were plainly wrong on screen that the entire offline suite had passed:
+the dashboard sat under the price scale's current-price label, and the risk /
+reward boxes carried `extend.right`, painting a permanent coloured background
+across the chart instead of marking a plan. Neither was a number, so nothing
+offline could see either one. Both are fixed, both now have structural
+assertions and coordinate assertions — and items 30–37 exist because those
+assertions still cannot see a rendered pixel.
 
 ---
 
@@ -39,6 +48,7 @@ compile, entirely because of its own tests. The hooks now live in
 
 | | |
 |---|---|
+| Plan geometry | box left edge is the last bar's time, right edge is exactly `PLAN_BARS = 16` bars later, and `box.new()` carries no `extend`. The four box edges are asserted **by name and by direction** — for a long, reward top = target and risk bottom = stop; for a short, they mirror — because `max`/`min` would give the same numbers while noticing nothing if a sign flipped |
 | Shipped file carries no instrumentation | `0` occurrences of a `"t_*"` output name in `main.pine` — asserted as exactly zero, not "few" |
 | Plot budget | asserted `< 15` and `<= 10`; the file currently uses **1** of Pine's 64. The plan is drawn with lines and boxes, which cost no output slots |
 | No `alertcondition()`, no `strategy()` | plan alerts use `alert()`, which consumes no output slot. Checked against code with comments stripped, so the source may still *explain* why it avoids them |
@@ -235,6 +245,14 @@ chart. **None has been performed.**
 | 27 | **Long and Short both produce a sane panel** from the same stop workflow, and the wrong-side guard still fires when the stop is on the wrong side | Asserted offline as arithmetic; unverified as an interaction. |
 | 28 | **`Position opened` on with no fill price** shows `SET ACTUAL FILL PRICE` and no live R, and setting the fill switches the panel to ACTIVE | The state machine and the panel text are asserted offline. What is unverified is that `Actual fill price` renders as a draggable marker and that the transition is legible while it happens. |
 | 29 | **Each Advanced override behaves in the dialog** — `Use manual entry`, `Use ATR stop`, `Use custom target`, `Use fixed cash risk` — including that the input each one supersedes reads as superseded | `Stop price` and `Target (R)` are deliberately *not* greyed out when their Advanced override is on, because the group ordering that would allow it would push Advanced above Trade plan. The checkbox label is the only thing telling the user the field is now ignored. Confirm that reads clearly, or accept it as a known rough edge. |
+| 30 | **Dashboard at the default Top left does not collide** with the symbol / OHLC header, the drawing toolbar, or anything else TradingView renders in that corner. If it does, fall back to **Middle left** | The offline runtime renders nothing. The default was changed *because* of a screenshot, and the replacement has not itself been seen on a chart. This is the item most likely to need a second change. |
+| 31 | **The current-price label no longer crosses the dashboard** — check on **5m, 15m, 1H and 4H desktop charts**, since the label's vertical position moves with price and the panel's height moves with content | The collision that prompted this patch. Nothing about the price scale exists offline. |
+| 32 | **Risk / reward boxes occupy a compact region to the right of the last bar** and do not extend to the edge of the chart | `extend` is absent from `box.new()` and the coordinates are asserted, but whether 16 bars *looks* right on each timeframe is a visual judgement. |
+| 33 | **LONG: the green area is entry→target above, the red area entry→stop below.** **SHORT: red above, green below** | Asserted numerically per direction. What is unverified is that Pine draws a box whose top is below its bottom the way this code assumes it never has to. |
+| 34 | **Scrolling and zooming** — the boxes stay attached to the last bar and do not smear, tear or vanish; `xloc.bar_time` behaves at the right-hand edge where future bar times do not exist yet | Box coordinates project **past the last bar**, into bar times that have not happened. `xloc.bar_time` is documented to handle this; it is not modelled offline at all. |
+| 35 | **Dragging the stop** redraws both boxes cleanly, with no ghost objects left behind, over many drags | Object identity is proven structurally (one `box.new()` behind an `na` guard, nine persistent handles). Pine's actual redraw behaviour under repeated input changes is not. |
+| 36 | **Switching Long ↔ Short** flips the box assignment on screen without leaving the previous orientation behind | Same reason. |
+| 37 | **Both themes** — the 92%-transparent fills are visible but do not dominate the candles on dark *or* light. Confirm the red and green are still distinguishable at that opacity | Opacity has no offline meaning, and `chart.bg_color` is stubbed, so only one side of the `isDark` branch is ever taken. This is a judgement about legibility that no assertion can make. |
 
 ---
 

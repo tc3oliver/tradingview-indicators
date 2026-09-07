@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.2.1
+
+Two things looked wrong in the TradingView Pine Editor that no offline test could
+see, because neither was a number. Both are fixed, and both now have assertions
+that would catch them again.
+
+### Fixed
+
+- **The dashboard defaulted to Top right, underneath the price scale.** On a real
+  chart the current-price label draws straight across it. The default is now
+  **Top left**. The right-hand positions are still offered — a different layout
+  may suit your chart — but they are not claimed to be collision-free.
+- **The risk and reward boxes carried `extend.right`** and started 40 bars in the
+  past, which is not a zone: it is a permanent coloured background over
+  everything to the right of the plan, burying the candles it is meant to sit
+  behind. Both boxes now run from the last bar to **16 chart bars** later, and
+  neither extends. The level *lines* still extend, because a level is a price.
+  The fills went from 90% to 92% transparent.
+
+### Changed
+
+- **Box edges are assigned per direction rather than by `max`/`min`.** For a long
+  the reward box is target-to-entry and the risk box entry-to-stop; for a short
+  they mirror. Both constructions produce the same numbers today — which is the
+  problem, because only one of them notices when a future edit gets the sign
+  wrong. The geometry is now computed in chart scope so the offline suite can
+  read the coordinates back and assert each edge by name.
+- **Decision panel wording, from a real screenshot.** `SIZE` became `POSITION`
+  and now leads with the money rather than the coin amount; `RISK` became
+  `MAX LOSS`. The stop row shows the percentage and drops the ATR multiple, and
+  the risk row drops its R multiple — both are research units and both are still
+  in Detailed. The target row shows its R, adding the net figure only when costs
+  move it by at least a tenth of an R.
+- **`PRICE→ENTRY` appears only for a manual planned entry.** With the default
+  live entry the market *is* the entry, so the row could only ever print
+  `+0.00R / $0 / 0.00%`. A row that can say one thing is furniture.
+
+### Notes
+
+No new features, no new setting, no research change. The sizing arithmetic, cost
+model, break-even, lifecycle, alerts and market-context semantics are untouched
+and re-asserted. `PLAN_BARS = 16` is a constant rather than an input: it is
+~80 minutes at 5m and ~2.7 days at 4H, and a control for it would be one more
+thing to understand for no decision it changes.
+
+Manual validation matters more than usual for this one — it was driven by
+rendering, and rendering is the thing the offline runtime does not do. See
+`TRADINGVIEW-VALIDATION.md` items 30–37.
+
 ## 1.2.0
 
 A UX release. No new measurement, no new indicator, no new claim — the

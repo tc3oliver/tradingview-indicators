@@ -6,7 +6,7 @@ Plan a BTC trade in 30 seconds.
 - Draggable Stop, and a plan from four settings
 - Cost-aware position sizing
 - Fixed-risk sizing (percent of equity or fixed cash)
-- Risk / reward zones drawn on the chart
+- Finite risk / reward zones drawn on the chart
 - Live R and estimated net P&L
 - Plan alerts
 - No automatic signal claims
@@ -101,11 +101,11 @@ line. This is a **Planning** plan — you have not entered yet:
 BTC TRADE PLAN
 LONG · PLANNING
 ENTRY         79,800.00    planned
-STOP          79,200.00    0.75% · 0.55 ATR
-TARGET        81,000.00    Gross 2.00R · Net 1.87R
+STOP          79,200.00    0.75%
+TARGET        81,000.00    2.00R · net 1.87R
 PRICE→ENTRY   +2.38R       +$1,431 · 1.79%
-SIZE          0.1253 BTC   $10,000
-RISK          $85          0.85% · 1.13R  ·  SIZE CAPPED
+POSITION      $10,000      0.1253 BTC
+MAX LOSS      $85          0.85%  ·  SIZE CAPPED
               requested $100   capped at 1x equity
 COST          $10          0.13R  ·  in sizing
 BREAKEVEN     79,879.84    10 bp
@@ -123,10 +123,12 @@ notional. The panel says `SIZE CAPPED` and reports the risk you are **actually**
 taking ($85) beside the one you asked for ($100). Raise **Max exposure** or widen
 the stop and the cap stops binding.
 
-**Why RISK shows `1.13R`.** R is the gross stop distance, 600. One unit actually
-loses 679.50 at the stop — the 600 plus both sides of cost — so being stopped out
-costs 1.13R, not 1R. The panel prints that multiple rather than leave you to
-discover it by dividing two numbers that do not divide.
+**Why the target shows two R figures.** R is the gross stop distance, 600, and
+the target sits 2R above entry. Costs eat 0.13R of that, so it is worth 1.87R net.
+Decision prints the net figure only when costs move it by at least a tenth of an
+R; below that it prints the gross R alone. `MAX LOSS` is the money, `COST` is the
+friction, and Detailed carries the full breakdown including what one unit really
+loses at the stop (1.13R, not 1R — the 600 plus both sides of cost).
 
 Once you are in, switch on **Position opened** and enter your fill. The status
 line reads `ACTIVE` and the live numbers lead:
@@ -137,12 +139,12 @@ LONG · ACTIVE
 LIVE          +0.63R
 NET P&L       +$37         gross +$47
 ENTRY         79,800.00    filled
-STOP          79,200.00    0.75% · 0.55 ATR
-TARGET        81,000.00    Gross 2.00R · Net 1.87R
+STOP          79,200.00    0.75%
+TARGET        81,000.00    2.00R · net 1.87R
 TO STOP       1.63R
 TO TARGET     1.37R
-SIZE          0.1253 BTC   $10,000
-RISK          $85          0.85% · 1.13R  ·  SIZE CAPPED
+POSITION      $10,000      0.1253 BTC
+MAX LOSS      $85          0.85%  ·  SIZE CAPPED
               requested $100   capped at 1x equity
 COST          $10          0.13R  ·  in sizing
 BREAKEVEN     79,879.84    10 bp
@@ -152,6 +154,9 @@ DISCRETIONARY MODE · NO AUTO ENTRIES
 
 Same plan, price now 80,178. `PRICE→ENTRY` is replaced by `TO STOP` and
 `TO TARGET`, and `LIVE` / `NET P&L` appear at the top.
+
+`PRICE→ENTRY` appears only with a **manual planned entry**. With the default live
+entry the market *is* the entry, so the row could only ever print `+0.00R`.
 
 ### One definition of R
 
@@ -172,6 +177,12 @@ lost at the stop is slightly **more** than 1R.
 | **Debug** | Detailed plus sample counts, exact σ, status codes and internal state codes. |
 
 **Panel size** is Compact / Normal / Large, and scales the Decision view.
+
+**Position** defaults to **Top left**. The right-hand side of a TradingView chart
+belongs to the price scale: the current-price label and the scale ticks draw over
+anything placed there, which is what a real screenshot showed. The right-hand
+positions are still offered because a different layout may suit your chart — not
+because they are collision-free.
 
 The mode is presentation only. It selects which rows are drawn and reaches no
 measurement, threshold, state definition, event or alert — every observable
@@ -248,11 +259,36 @@ measure a live R from, and would report +0.00R forever while the position moved.
 ### On the chart
 
 Entry, stop and target are drawn as solid lines; the 1R/2R/3R ladder as thin
-dashed reference lines; break-even as a dotted line. Two faint boxes shade the
-risk zone (entry to stop) and the reward zone (entry to target). Each can be
-switched off. Prices are rounded to the instrument's tick before they are drawn
-or printed, because a price the exchange cannot accept is not a price you can put
-an order at.
+dashed reference lines; break-even as a dotted line. The lines start behind the
+current bar and carry on to the right, because a level is a price.
+
+Two faint boxes shade the **risk zone** (entry to stop) and the **reward zone**
+(entry to target). They start at the last bar and stop **16 chart bars** later:
+
+```
+                     ┌─────────────┐  TARGET
+                     │ reward      │
+    ENTRY ───────────┼─────────────┤
+                     │ risk        │
+                     └─────────────┘  STOP
+                     ↑             ↑
+                  last bar    +16 bars
+```
+
+They are deliberately finite. Until v1.2.1 they carried `extend.right`, which on
+a real chart is not a zone at all — it is a permanent coloured background over
+everything to the right of the plan, burying the candles it is meant to sit
+behind. A plan is a compact object near the current price.
+
+For a short the boxes flip: the risk box runs from the stop down to the entry,
+and the reward box from the entry down to the target. That assignment is written
+out per direction in the source and asserted per direction in the tests, rather
+than derived with `max`/`min` — both give the same numbers, and only one of them
+notices when a future edit gets the sign wrong.
+
+Each can be switched off. Prices are rounded to the instrument's tick before they
+are drawn or printed, because a price the exchange cannot accept is not a price
+you can put an order at.
 
 ### Plan alerts
 
