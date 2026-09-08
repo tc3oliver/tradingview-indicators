@@ -103,12 +103,6 @@ export const setConst = (src, name, v) =>
 // under test is the GUARD, and the guard is downstream of the substitution.
 export const symOverride = (src, name, expr) =>
   rewrite(src, new RegExp(`^(${name}\\s*)= syminfo\\.\\w+$`, 'm'), `$1= ${expr}`, `syminfo ${name}`);
-// The visible range is a TradingView UI value with no offline equivalent — it is
-// na here, which is exactly the fallback path the source guards for. Substituting
-// it at its single read site is how the FOLLOWING behaviour gets tested rather
-// than assumed.
-export const visibleRight = (src, expr) =>
-  rewrite(src, /^visRight = chart\.right_visible_bar_time$/m, `visRight = ${expr}`, 'chart.right_visible_bar_time');
 export const chartStandard = (src, expr) =>
   rewrite(src, /^stdChart = chart\.is_standard$/m, `stdChart = ${expr}`, 'chart.is_standard');
 export const asMode = (src, m) =>

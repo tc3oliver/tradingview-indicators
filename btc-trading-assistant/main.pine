@@ -1805,30 +1805,24 @@ zoneBox(bx, xL, xR, top, bot, bg) =>
 // day be wrong in a screenshot instead of in a test run.
 barMs = chartSec * 1000
 
-// VIEWPORT ANCHOR. A plan pinned to the last bar is stranded there: scroll back
-// through history and the risk/reward object leaves the screen, taking the only
-// picture of the trade with it. chart.right_visible_bar_time is the right edge of
-// what the user is ACTUALLY looking at, so the boxes follow the chart.
+// BAR ANCHOR. The plan is drawn where the trade IS: from the last bar, reaching
+// PLAN_BARS into the empty space to its right, the way TradingView's own position
+// tool behaves. It scrolls with the candles, because that is what being ON the
+// chart means — a shape that holds its screen position while the chart slides
+// underneath it is not a drawing, it is a watermark.
 //
-// It is na before TradingView has supplied a visible range, and na on any runtime
-// that does not implement it, so the last bar is the anchor of last resort rather
-// than an error. The offline suite substitutes this one line to test the
-// following behaviour, the same way it substitutes the syminfo.* reads.
+// v1.2.2 anchored these to chart.right_visible_bar_time so the boxes could never
+// leave the screen. That was wrong twice over: it produced exactly the stuck-in-
+// place appearance the original complaint was about, and it made TradingView
+// re-execute the whole script — 13 request.security calls and a 2,190-bar
+// percentile — on every scroll and zoom. Nothing is lost by dropping it, because
+// the level LINES extend both ways: scrolling away from the boxes never costs you
+// the plan's prices.
 //
-// THE COST, STATED: reading it makes TradingView re-execute the whole script on
-// every scroll and zoom — 13 request.security calls and a 2,190-bar percentile
-// each time. That is the price of the boxes staying on screen, and it is paid on
-// every pan whether or not a plan is enabled.
-visRight = chart.right_visible_bar_time
-anchorR  = na(visRight) ? time : visRight
-
-// Levels extend BOTH ways. A price is true across the whole chart, and a level
-// that stops 40 bars back is a level you lose the moment you scroll to look at
-// what happened before the trade.
-lineL = time - 40 * barMs
-// The boxes hang off the right edge of the viewport and reach back PLAN_BARS.
-boxR  = anchorR
-boxL  = anchorR - PLAN_BARS * barMs
+// Levels extend BOTH ways, so their anchor is only a handle, never a visible end.
+lineL = time
+boxL  = time
+boxR  = time + PLAN_BARS * barMs
 vizOn = showViz and planOK
 
 // VERTICAL SEMANTICS, WRITTEN OUT PER DIRECTION. math.max/math.min over the same

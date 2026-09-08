@@ -9,7 +9,7 @@
 import {
   rows, run, ser, eq, check, note, section, fin, CHART, ALT,
   BASE, PROD, RAW, HASH, rewrite, enable, extMaster, wire, asMode, setConst,
-  symOverride, chartStandard, visibleRight, readTable, bser, decode, branchTypeLint, buildSeries,
+  symOverride, chartStandard, readTable, bser, decode, branchTypeLint, buildSeries,
 } from './harness.mjs';
 import { instrument, hookNames, missingSymbols } from './build-instrumented.mjs';
 
@@ -1043,28 +1043,27 @@ export async function geometryChecks() {
   check(/line\.new\([^\n]*extend = extend\.both/.test(RAW), '...while the level LINES extend BOTH ways, because a price is true across the whole chart');
   const planBars = +(RAW.match(/^PLAN_BARS = (\d+)/m) ?? [])[1];
   check(planBars >= 8 && planBars <= 40, `the plan reaches ${planBars} chart bars into the future, a fixed default rather than a setting`);
-  check(/^boxR  = anchorR$/m.test(RAW), 'the boxes hang off the right edge of the VIEWPORT, so scrolling does not strand the plan');
-  check(/^boxL  = anchorR - PLAN_BARS \* barMs$/m.test(RAW), '...and reach back a bounded number of bars from it');
-  check(/^visRight = chart\.right_visible_bar_time$/m.test(RAW) && /^anchorR  = na\(visRight\) \? time : visRight$/m.test(RAW),
-    'a runtime that reports no visible range anchors on the last bar instead of erroring');
+  check(/^boxL  = time$/m.test(RAW) && /^boxR  = time \+ PLAN_BARS \* barMs$/m.test(RAW),
+    'the boxes are anchored to the BAR, so they scroll with the candles like every other chart drawing');
+  // Comments are stripped first: the file explains at length why the visible-range
+  // anchor was removed, and naming the built-in in that explanation is not reading it.
+  check(!/chart\.(right|left)_visible_bar_time/.test(RAW.replace(/\/\/.*$/gm, '')),
+    '...and no CODE reads the visible range, so scrolling does not re-execute 13 request.security calls');
 
   // ---- the coordinates themselves ------------------------------------------
   const longCtx = await run(sample, { source: plan({ entry: 60000, stop: 58000 }) });
   const g = (c, k) => ser(c, k)[i];
   const t = sample[i].t;
-  check(g(longCtx, 't_boxR') === t, 'with no visible range reported, the box anchors on the last bar');
-  check(g(longCtx, 't_boxL') === t - 16 * H4, `...and is exactly ${planBars} bars wide`);
+  check(g(longCtx, 't_boxL') === t, 'the box starts at the last bar, so it never covers a candle that already printed');
+  check(g(longCtx, 't_boxR') === t + 16 * H4, `...and reaches exactly ${planBars} bars into the empty space to its right`);
   check(g(longCtx, 't_boxR') > g(longCtx, 't_boxL'), 'and the box has positive width, so it is a box');
 
-  // THE FOLLOWING BEHAVIOUR. The complaint this answers is that scrolling back
-  // through history left the plan behind at the last bar. Substituting the
-  // viewport's right edge is the only way to see that the box moved with it.
-  const scrolled = t - 300 * H4;
-  const back = await run(sample, { source: visibleRight(plan({ entry: 60000, stop: 58000 }), String(scrolled)) });
-  check(g(back, 't_boxR') === scrolled, 'scrolled back 300 bars, the box follows the viewport rather than staying at the last bar');
-  check(g(back, 't_boxL') === scrolled - 16 * H4, '...still exactly 16 bars wide, so it reads as the same object');
-  check(g(back, 't_rskTop') === g(longCtx, 't_rskTop') && g(back, 't_rwdTop') === g(longCtx, 't_rwdTop'),
-    '...and at the same prices — scrolling moves where the plan is drawn, never what it says');
+  // MOVING WITH THE CHART. A bar-anchored drawing is one whose x follows `time`,
+  // which is exactly what "it scrolls with the candles" reduces to. Two bars
+  // apart in the series must be two bars apart in the box.
+  const bl = fin(ser(longCtx, 't_boxL'));
+  check(new Set(bl).size === bl.length, `every bar anchors the box at its own time (${bl.length} distinct left edges)`);
+  check(bl[bl.length - 1] - bl[bl.length - 2] === H4, '...one bar apart, so the plan travels with the chart rather than holding a screen position');
 
   // ---- vertical semantics, stated per direction ----------------------------
   // math.max/math.min over the same two prices gives the same numbers. These
@@ -1096,8 +1095,7 @@ export async function geometryChecks() {
   // NOT change is the object count.
   // What must move every bar is the PRICES: entry follows the market, so the 2R
   // target and the entry edge the two boxes share move with it. The x-anchor
-  // deliberately does NOT move per bar any more — it moves with the viewport,
-  // which is what the scroll check above proves.
+  // moves every bar too, which the left-edge check above proves.
   const live = await run(sample, { source: plan({ stop: 58000 }) });
   const movedTop = new Set(fin(ser(live, 't_rwdTop'))).size;
   const movedShared = new Set(fin(ser(live, 't_rskTop'))).size;

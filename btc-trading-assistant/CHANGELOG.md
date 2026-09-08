@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.2.3
+
+v1.2.2 fixed the drawing complaint by making the boxes hold their position on
+screen. That was the complaint.
+
+### Fixed
+
+- **The plan drawings are anchored to the bar again.** The risk/reward boxes now
+  run from the last bar to `PLAN_BARS` in front of it, in the empty space to its
+  right, and scroll with the candles like every other drawing on the chart —
+  which is what v1.2.1's specification asked for in the first place
+  (`leftX = current last bar time`, `rightX = leftX + N bars`).
+
+  v1.2.2 anchored them to `chart.right_visible_bar_time` so they could never
+  leave the screen. A shape that keeps its screen position while the chart slides
+  underneath it does not read as part of the chart; it reads as a watermark, and
+  it is the same "stuck in place" appearance the original report was about. The
+  level lines keep `extend.both`, so scrolling away from the boxes still never
+  costs you the plan's prices.
+
+### Removed
+
+- **Nothing reads the chart's visible range any more.** That read made
+  TradingView re-execute the entire script — 13 `request.security` calls and a
+  2,190-bar percentile — on every scroll and zoom, whether or not a plan was
+  enabled. Manual item 35 existed to decide whether that cost was worth paying;
+  it is not being paid, so it is gone, along with the harness substitution and
+  the fallback path that existed only to serve it.
+
+### Notes
+
+Two visual defaults have now been wrong on a real chart three times between
+them, and the offline suite passed on every one. The assertion that replaces the
+scroll check is the plainest statement of what "moves with the chart" means: the
+box's left edge must be a distinct value on every bar, one bar apart. That is
+falsifiable offline; "looks right when you pan" is not, which is why manual item
+34 stays.
+
 ## 1.2.2
 
 A second pass over v1.2.1's visuals, driven the same way: by looking at a real

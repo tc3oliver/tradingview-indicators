@@ -275,19 +275,24 @@ whatever you are looking at, so scrolling back through history does not leave th
 plan stranded at the last bar:
 
 ```
-                     ┌─────────────┐  TARGET
-                     │ reward      │
-◄─── ENTRY ──────────┼─────────────┤ ───►
-                     │ risk        │
-                     └─────────────┘  STOP
-                     ↑             ↑
-                 −16 bars     visible right edge
+                        ┌─────────────┐  TARGET
+                        │ reward      │
+◄─── ENTRY ─────────────┼─────────────┤ ───►
+                        │ risk        │
+                        └─────────────┘  STOP
+                        ↑             ↑
+                    last bar      +16 bars
 ```
 
-The lines extend both ways and are always visible; the boxes follow the
-viewport. Reading TradingView's visible range makes it re-execute the script on
-every scroll and zoom, which is a real cost on a long lower-timeframe chart —
-that is the price of the plan staying on screen.
+The lines extend both ways, so the plan's prices are readable wherever you
+scroll. The boxes are anchored to the last bar and reach into the empty space to
+its right, so they scroll with the candles like any other chart drawing.
+
+v1.2.2 pinned the boxes to the visible range instead, so they could never leave
+the screen. That was wrong: a shape that holds its screen position while the
+chart slides underneath it reads as a watermark, not as a drawing on the chart —
+and reading the visible range made TradingView re-execute the whole script on
+every scroll and zoom. Both are gone.
 
 They are deliberately finite. Until v1.2.1 they carried `extend.right`, which on
 a real chart is not a zone at all — it is a permanent coloured background over
