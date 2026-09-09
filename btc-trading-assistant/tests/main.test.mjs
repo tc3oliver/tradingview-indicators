@@ -1126,3 +1126,84 @@ export async function geometryChecks() {
     check(Math.abs(g(longCtx, k) - v) < 1e-9, `${k} unchanged by the visual patch (${g(longCtx, k)})`);
   }
 }
+
+// ==================================================== PRICE-SCALE ALIGNMENT ==
+// A screenshot showed the panel printing STOP 72,940.9 while the stop line was
+// drawn at roughly 65k of chart height, and the levels not moving with the price
+// axis under vertical pan — the signature TradingView documents for an indicator
+// pinned to "No Scale".
+//
+// WHAT THIS SECTION CAN AND CANNOT DO. It proves the FIRST of the two equalities
+// the report asks for:
+//
+//     panel displayed price == drawing's y coordinate    ← provable here
+//     drawing's y coordinate == where TradingView puts it on the BTC scale
+//                                                        ← NOT provable here, ever
+//
+// The second one is a question about which scale the chart binds this indicator
+// to, which is per-instance UI state saved in the layout. Nothing offline renders
+// a pixel or knows about a scale. Manual items 40-46 are the only evidence for
+// it, and no number in this file may be offered in their place.
+export async function scaleAlignmentChecks() {
+  section('PRICE-SCALE ALIGNMENT — the panel number and the drawn coordinate are one value');
+
+  // ---- the declaration asks for the chart's own scale ----------------------
+  // TradingView: with overlay=true and no `scale` argument, a script uses the
+  // chart's existing price scale. Both alternatives are worse and both are
+  // tempting: scale.none is the documented CAUSE of this exact symptom, and
+  // scale.right attaches to a NEW right scale rather than the existing one.
+  const decl = RAW.match(/^indicator\([\s\S]*?\)$/m)[0];
+  check(/overlay\s*=\s*true/.test(decl), 'the script declares overlay = true, so it draws in the main price pane');
+  check(!/\bscale\s*=/.test(decl), '...and passes no scale argument, which is what binds it to the chart\'s existing price scale');
+  check(!/scale\.(none|left|right)/.test(RAW.replace(/\/\/.*$/gm, '')),
+    '...and never names scale.none, scale.left or scale.right — none of the three is the fix for a mis-pinned instance');
+
+  // ---- one value, two renderings ------------------------------------------
+  // The row and the line must read the same variable through the same rounding.
+  // If these ever diverge the panel becomes a caption for a drawing somewhere
+  // else, which is indistinguishable on screen from the scale bug above.
+  const LEVELS = [
+    ['ENTRY', 'entryPx', 'lnEntry'],
+    ['STOP', 'stopPx', 'lnStop'],
+    ['TARGET', 'tgtPx', 'lnTgt'],
+    ['BREAKEVEN', 'bePx', 'lnBE'],
+  ];
+  for (const [row, v, handle] of LEVELS) {
+    const printed = new RegExp(`addRow\\(dash, r, "${row}", px\\(rt\\(${v}\\)\\)`).test(RAW);
+    const drawn = new RegExp(`${handle}\\s*:= lvlLine\\(${handle},\\s*lineL,[^\\n]*\\brt\\(${v}\\)`).test(RAW);
+    check(printed && drawn, `${row}: the panel prints rt(${v}) and the line is drawn at rt(${v}) — one value, two renderings`);
+  }
+
+  // ---- and they agree numerically on a known plan --------------------------
+  // Offline syminfo.mintick is na, so rt() is the identity here: what this
+  // compares is the panel's FORMATTING of the coordinate against the coordinate,
+  // which is the step where a stray round or a wrong variable would show up.
+  const stop = 72940.9;
+  const ctx = await run(rows.slice(-200), { source: plan({ entry: 78000, stop }) });
+  const table = readTable(ctx);
+  const i = 199;
+  //
+  // Compared as NUMBERS, not as text: the offline runtime renders Pine's
+  // "#,###.##" without the thousands separator and with fixed decimals, so
+  // TradingView's "72,940.9" is this runtime's "72940.90". That divergence is
+  // the formatter's, and asserting on it would be asserting on the harness.
+  const cell = (row) => {
+    const line = table.find((l) => l.startsWith(row + ' |'));
+    return line ? Number((line.split(' | ')[1] ?? '').replace(/,/g, '')) : NaN;
+  };
+  for (const [row, key] of [['ENTRY', 't_entry'], ['STOP', 't_stop'], ['TARGET', 't_target'], ['BREAKEVEN', 't_bePx']]) {
+    const shown = cell(row);
+    const coord = ser(ctx, key)[i];
+    check(Math.abs(shown - coord) < 0.005, `${row}: the panel says ${shown} and the line is drawn at ${coord}`);
+  }
+
+  // The one the screenshot was about, stated as itself.
+  check(Math.abs(cell('STOP') - stop) < 1e-9 && Math.abs(ser(ctx, 't_stop')[i] - stop) < 1e-9,
+    'a stop entered as 72,940.9 is both printed and drawn at 72,940.9 — so a line rendered elsewhere is the chart\'s scale, not this arithmetic');
+
+  // ---- vertical semantics do not depend on the x anchor --------------------
+  // Vertical pan and zoom change no Pine value at all: y coordinates are prices
+  // and prices do not know where the viewport is. That is precisely why nothing
+  // here can speak to the reported symptom.
+  note('vertical pan / zoom / auto-scale change no value in this script — see TRADINGVIEW-VALIDATION.md items 40-46');
+}

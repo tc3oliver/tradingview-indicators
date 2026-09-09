@@ -309,6 +309,30 @@ Each can be switched off. Prices are rounded to the instrument's tick before the
 are drawn or printed, because a price the exchange cannot accept is not a price
 you can put an order at.
 
+#### If the lines are at the wrong height
+
+If the panel says `STOP 72,940.9` but the stop line is drawn somewhere else, or
+the levels do not move with the candles when you pan vertically, **the indicator
+is pinned to the wrong price scale.** It is not an arithmetic error: the panel row
+and the line are the same value in the source — `px(rt(stopPx))` and `rt(stopPx)`
+— and Pine cannot draw a line at a price other than the one it is given.
+
+One toggle tells you which it is: switch on **Daily 200MA** under Display. It
+plots a real price series that should sit on the candles. If *it* is at the wrong
+height too, the whole indicator is on the wrong scale.
+
+The fix is TradingView's, not the script's: right-click the indicator's name in
+the chart legend → **Pin to Scale** → the same scale the price is on (usually
+`Scale A` / Right). `No Scale` is the setting that produces exactly this — the
+drawings float in screen space instead of hanging off the price axis.
+
+This setting is saved per instance in the chart layout, so an old instance can
+carry it while a freshly added one does not. Nothing in Pine can override it: the
+script already declares `overlay = true` with no `scale` argument, which is the
+declaration that binds it to the chart's existing scale, and both alternatives
+are worse — `scale.none` causes the symptom, and `scale.right` would attach the
+script to a *new* right scale rather than the one the candles use.
+
 ### Plan alerts
 
 Off by default. When on, they fire on **confirmed bars only**, once per level:

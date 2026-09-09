@@ -258,6 +258,49 @@ chart. **None has been performed.**
 
 ---
 
+## PRICE-SCALE ALIGNMENT (items 40–46) — the whole point is that nothing offline covers this
+
+A screenshot showed the panel printing `STOP 72,940.9` while the stop line sat at
+roughly 65k of chart height, and the plan levels not moving with the price axis
+under a vertical pan.
+
+**Read this before running the items.** In the shipped file the panel row and the
+level line are the *same value*: the row is `addRow(..., px(rt(stopPx)), ...)` and
+the line is `lvlLine(..., rt(stopPx), ...)`. Pine cannot place a line at a price
+other than the one it is given. So a line rendering at a different height than the
+number the panel prints is a statement about **which price scale TradingView has
+bound this indicator instance to**, not about the arithmetic — and TradingView
+documents this exact symptom under *"No Scale"*: *"The indicator moves
+independently from the candles when you scroll or zoom the chart"*, *"The line
+'floats' across the screen and doesn't 'stick' to the price bars."*
+
+That is a hypothesis from the code and the vendor docs. It is not a finding.
+Items 40–46 are what would make it one.
+
+| # | Check | Why it is here |
+|---|---|---|
+| 40 | **The one-toggle discriminator. Turn on `Daily 200MA` in Display.** It plots a real price series that should hug the candles. If the orange 200MA is *also* at the wrong height → the whole indicator is on the wrong scale and no drawing is involved. If the 200MA sits correctly on the candles while the plan lines do not → the hypothesis is wrong and this becomes a Pine bug | This is the only test that separates "wrong scale" from "wrong drawing" in a single look, and it needs no measurement. Run it first. It also gives you a plotted line to right-click, which matters for item 42: by default this script's only plot is `na` on every bar, so there is often nothing on the chart to open the scale menu from except the legend text. |
+| 41 | **Which scale each thing is on.** Record, separately: the scale of the BTC candles, and the scale shown under the indicator's `Pin to Scale` menu | The report asks for these as three distinct facts. Do not infer one from the other. |
+| 42 | **`Pin to Scale` → same scale as the candles** (right-click the indicator's name in the legend, or the `⋯` menu next to it → `Pin to Scale` → the scale the price is on, usually `Scale A` / `Right`). Record whether the misalignment disappears | If it disappears, the arithmetic was never involved and no Pine change is warranted. Record that plainly rather than patching something. |
+| 43 | **A clean instance.** Remove the indicator from the chart entirely, `Add to chart` again, change no scale setting, repeat items 40–42 | `Pin to Scale` is per-instance and saved with the layout, so an old instance can carry a setting a fresh one never gets. If the fresh instance is correct and the old one is not, this is saved chart state, and the honest conclusion is that Pine cannot prevent it. |
+| 44 | **Alignment of each level against the BTC axis** — `ENTRY`, `STOP`, `TARGET`, `BREAKEVEN`. For each: the panel's number, and the price the main scale shows at that line's height. They must agree within one tick | The offline suite proves the panel number equals the drawing's y *value*. Only this item connects that value to a pixel on the BTC axis. |
+| 45 | **Vertical pan, vertical zoom, auto-scale on/off.** After each, repeat item 44 | No Pine value changes under any of these — y coordinates are prices, and a price does not know where the viewport is. So a level that moves relative to the candles here is conclusive: it is the scale binding, not the script. |
+| 46 | **Horizontal scroll and 4H → 1H → 15m.** Repeat item 44 at each timeframe | A timeframe change re-executes the script, so this catches anything that made a level depend on bar size. `PLAN_BARS` is an x-axis quantity and must not be touched in response to a y-axis symptom. |
+
+**Reproduction for items 40–46:** `BINANCE:BTCUSDT.P`, 4H. Trade plan on,
+`Direction = Long`, entry left at the default (current price), `Stop price =
+72,940.9`.
+
+**If items 42 and 43 both fix it, do not change the Pine.** The declaration is
+already `indicator(..., overlay = true)` with no `scale` argument, which is what
+binds a script to the chart's existing price scale. The two available
+alternatives are both worse: `scale.none` is the documented *cause* of this
+symptom, and `scale.right` attaches the script to a *new* right scale rather than
+the existing one. There is no Pine API that forces an instance onto the main
+scale, so prevention is a README note, not a code change.
+
+---
+
 ## Not part of this indicator
 
 `tools/microstructure/` is a Node collector for the M2 prospective order-book

@@ -4,6 +4,7 @@ import {
   sourceChecks, timeframeChecks, independenceChecks, dataHonestyChecks,
   semanticChecks, panelChecks, paletteChecks, instrumentChecks,
   plannerChecks, alertChecks, drawingChecks, uxChecks, geometryChecks,
+  scaleAlignmentChecks,
 } from './main.test.mjs';
 
 console.log('='.repeat(94));
@@ -25,6 +26,7 @@ await alertChecks();
 await drawingChecks();
 await uxChecks();
 await geometryChecks();
+await scaleAlignmentChecks();
 
 console.log(`\n${'='.repeat(94)}`);
 console.log(`${results.pass} passed, ${results.fail} failed`);

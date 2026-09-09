@@ -1,5 +1,53 @@
 # Changelog
 
+## 1.2.4
+
+No Pine change. A reported misalignment — the panel printing `STOP 72,940.9`
+while the stop line sat near 65k of chart height, and the levels not moving with
+the price axis under a vertical pan — was diagnosed to the chart's price-scale
+binding rather than to this script, and the diagnosis was written down instead of
+guessed at.
+
+### Why no code changed
+
+The panel row and the level line are the **same value** in the source: the row is
+`px(rt(stopPx))`, the line is `rt(stopPx)`. Pine cannot draw a line at a price
+other than the one it is handed, so a line rendering at a different height than
+the number beside it is a statement about which scale TradingView has bound the
+indicator to. TradingView documents this symptom under `No Scale`: *"The
+indicator moves independently from the candles when you scroll or zoom"*, *"The
+line 'floats' across the screen and doesn't 'stick' to the price bars."*
+
+The declaration is already the correct one — `overlay = true` with no `scale`
+argument, which binds a script to the chart's existing price scale. Both
+alternatives are worse and both look like fixes: `scale.none` is the documented
+*cause*, and `scale.right` attaches to a *new* right scale rather than the one
+the candles use. There is no Pine API that pins an instance to the main scale, so
+this is preventable in documentation only.
+
+**This diagnosis is unconfirmed.** Nobody has opened the chart. Manual items
+40–46 are what would confirm or refute it.
+
+### Added
+
+- **`PRICE-SCALE ALIGNMENT`, 7 offline checks.** Three assert the declaration and
+  that the file never names `scale.none` / `scale.left` / `scale.right`; four
+  assert, per level, that the panel row and the line are drawn from the same
+  `rt()` of the same variable, and that the printed number equals the drawn
+  coordinate for `ENTRY`, `STOP`, `TARGET` and `BREAKEVEN`.
+
+  These prove `panel price == drawing's y value`. They say nothing whatever about
+  `drawing's y value == where TradingView renders it`, which is the actual
+  complaint. The section's own comment says so, because this is the third visual
+  defect in a row that a green suite did not see.
+- **Manual items 40–46**, including a one-toggle discriminator: switching on
+  `Daily 200MA` plots a real price series that should hug the candles. If it is
+  at the wrong height too, the indicator is on the wrong scale and no drawing is
+  involved. It also supplies something to right-click — by default this script's
+  only plot is `na` on every bar, so there is usually no plotted line on the chart
+  to open `Pin to Scale` from.
+- **A README section** under *On the chart* with the same discriminator and fix.
+
 ## 1.2.3
 
 v1.2.2 fixed the drawing complaint by making the boxes hold their position on
