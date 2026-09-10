@@ -170,7 +170,14 @@ TR_EXIT     = 0.2
 G_PLAN = "Trade plan"
 planOn = input.bool(false, "Enable trade plan", group = G_PLAN, tooltip = "Off by default. Market context needs no configuration; the plan needs your direction and your invalidation, so it stays silent until you ask for it.")
 dirIn  = input.string("Long", "Direction", options = ["Long", "Short"], group = G_PLAN, active = planOn, tooltip = "The direction of YOUR trade. This tool does not pick one for you and never will — no study here found a rule that could.")
-stopIn = input.price(0.0, "Stop price", group = G_PLAN, active = planOn, tooltip = "The price at which your trade idea is wrong. Drag the line on the chart, or type the number here.\n\nNothing is sized until you set it. The tool will not guess your invalidation, because choosing it is the decision the rest of the arithmetic depends on.")
+// TYPED, NOT DRAGGED, and that is a correctness decision rather than a
+// simplification. input.price() adds a horizontal marker of TradingView's own to
+// the chart — by default, with no way to hide or restyle it, and with no Pine
+// parameter that binds it to a price scale. A marker this script cannot control
+// is a second price level on the chart that can disagree with the line the script
+// draws, and two levels claiming to be the stop is worse than one you have to
+// type. The line drawn below is the only stop visual, and it is force_overlay.
+stopIn = input.float(0.0, "Stop price", minval = 0, group = G_PLAN, active = planOn, tooltip = "The price at which your trade idea is wrong. Type it here.\n\nNothing is sized until you set it. The tool will not guess your invalidation, because choosing it is the decision the rest of the arithmetic depends on.\n\nNot draggable: a dragged marker belongs to TradingView, not to this script, and cannot be kept on the chart's own price scale. The line the script draws is the one to trust.")
 
 G_ACCT = "Account"
 equity  = input.float(10000, "Account equity", minval = 1, group = G_ACCT, tooltip = "How much money the position size is calculated from. Usually set once and left alone.")
@@ -180,7 +187,7 @@ G_ADVP = "Advanced — plan"
 // ENTRY. Following the current price is what you want while you are still
 // deciding, so it is the default and it needs no control at all.
 useManualEntry = input.bool(false, "Use manual entry", group = G_ADVP, active = planOn, tooltip = "Off: the planned entry is the current price. On: it is the price below.")
-entryIn        = input.price(0.0, "  Manual entry price", group = G_ADVP, active = planOn and useManualEntry, tooltip = "Draggable on the chart. Size, risk, cost, targets and break-even all update as you move it.")
+entryIn        = input.float(0.0, "  Manual entry price", minval = 0, group = G_ADVP, active = planOn and useManualEntry, tooltip = "Size, risk, cost, targets and break-even all update as you change it. Typed rather than dragged — see the note on Stop price.")
 // STOP. Deliberately NOT derived from ATR unless asked for: a stop the tool
 // chose reads as the tool deciding where your idea is wrong.
 useAtrStop     = input.bool(false, "Use ATR stop", group = G_ADVP, active = planOn, tooltip = "Off: your Stop price is used. On: the stop is placed a fixed multiple of chart ATR(14) from entry and the Stop price is ignored.\n\nA distance convention, not a prediction.")
@@ -189,11 +196,11 @@ atrMult        = input.float(1.5, "  ATR multiple", minval = 0.25, maxval = 10, 
 // would I take it off" without anyone setting anything.
 useCustomTgt   = input.bool(false, "Use custom target", group = G_ADVP, active = planOn, tooltip = "Off: the target sits at a multiple of your risk. On: it is the price below.")
 tgtR           = input.float(2.0, "  Target (R)", minval = 0.25, maxval = 20, step = 0.25, group = G_ADVP, active = planOn and not useCustomTgt, tooltip = "In multiples of the distance from entry to stop. At 2R a winner pays twice what the stop costs.")
-tgtIn          = input.price(0.0, "  Custom target price", group = G_ADVP, active = planOn and useCustomTgt, tooltip = "Draggable on the chart.")
+tgtIn          = input.float(0.0, "  Custom target price", minval = 0, group = G_ADVP, active = planOn and useCustomTgt, tooltip = "Where you intend to close the trade in the green, as a price rather than a multiple of risk. Typed rather than dragged — see the note on Stop price.")
 // LIFECYCLE, in the words of the thing that happened rather than in the words
 // of the state machine. Internally this is still Planning / Active.
 posOpen        = input.bool(false, "Position opened", group = G_ADVP, active = planOn, tooltip = "Off while you are still planning: the panel shows what the position WOULD be, and how far price is from your entry.\n\nOn once you are in it: the panel switches to live R, estimated net P&L, and distance to your stop and target. It then needs the price you actually filled at — a plan whose entry follows the market has no fill to measure from.")
-fillIn         = input.price(0.0, "  Actual fill price", group = G_ADVP, active = planOn and posOpen, tooltip = "The price you actually got. Draggable on the chart.")
+fillIn         = input.float(0.0, "  Actual fill price", minval = 0, group = G_ADVP, active = planOn and posOpen, tooltip = "The price you actually got, which is rarely the price you planned. Typed rather than dragged — see the note on Stop price.")
 
 G_ADVR = "Advanced — risk"
 useFixedCash = input.bool(false, "Use fixed cash risk", group = G_ADVR, active = planOn, tooltip = "Off: risk is a percentage of account equity. On: it is the flat amount below, whatever the account is worth.")
@@ -1673,7 +1680,7 @@ rt(p) => na(p) or na(mtick) or mtick <= 0 ? p : math.round(p / mtick) * mtick
 // price and R, and no output slot is consumed.
 //
 // DUPLICATE GUARD. Each call site latches after firing and re-arms only when its
-// LEVEL MOVES — so dragging the stop to a new price arms it again, while price
+// LEVEL MOVES — so moving the stop to a new price arms it again, while price
 // oscillating around an unchanged stop fires once. Suppressed repeats are
 // counted so the test suite can assert the guard did its job rather than assume
 // it.
@@ -1774,10 +1781,17 @@ var box  bxRwd   = na
 
 CLEAR = color.new(color.gray, 100)
 
+// force_overlay = true on both constructors below. What the documentation
+// promises is PANE: the drawing displays in the main chart pane even when the
+// script occupies a separate one. This script is already overlay = true, so by
+// that reading it is a no-op — it is here as the strongest binding to the main
+// pane that Pine offers, taken on the chance that it also governs which scale
+// the drawing resolves against. The docs do not say that it does, and nobody has
+// checked on a chart, so it is a hedge and is labelled as one. See manual item 47.
 lvlLine(ln, x1, p, col, sty, w) =>
     line l = ln
     if na(l)
-        l := line.new(x1, p, x1 + 1, p, xloc = xloc.bar_time, extend = extend.both, color = col, style = sty, width = w)
+        l := line.new(x1, p, x1 + 1, p, xloc = xloc.bar_time, extend = extend.both, color = col, style = sty, width = w, force_overlay = true)
     line.set_xy1(l, x1, na(p) ? 0.0 : p)
     line.set_xy2(l, x1 + 1, na(p) ? 0.0 : p)
     line.set_color(l, na(p) ? CLEAR : col)
@@ -1792,7 +1806,7 @@ lvlLine(ln, x1, p, col, sty, w) =>
 zoneBox(bx, xL, xR, top, bot, bg) =>
     box b = bx
     if na(b)
-        b := box.new(xL, top, xR, bot, xloc = xloc.bar_time, border_color = CLEAR, bgcolor = bg)
+        b := box.new(xL, top, xR, bot, xloc = xloc.bar_time, border_color = CLEAR, bgcolor = bg, force_overlay = true)
     box.set_lefttop(b, xL, na(top) ? 0.0 : top)
     box.set_rightbottom(b, xR, na(bot) ? 0.0 : bot)
     box.set_bgcolor(b, na(top) or na(bot) ? CLEAR : bg)
@@ -2063,7 +2077,7 @@ if showTable and barstate.islast
                 wideRow(dash, r, "SET ACTUAL FILL PRICE · the price you actually got, in Advanced — plan", cBadBg, szBody)
                 r += 1
             else if needStop
-                wideRow(dash, r, "SET STOP · drag the stop line, or enter your invalidation price", cBadBg, szBody)
+                wideRow(dash, r, "SET STOP · enter your invalidation price in the settings", cBadBg, szBody)
                 r += 1
             else if not sideOK
                 wideRow(dash, r, na(entryPx) ? "Set a manual entry price." : "The stop is on the wrong side of entry for a " + str.lower(dirTxt) + ".", cBadBg, szBody)

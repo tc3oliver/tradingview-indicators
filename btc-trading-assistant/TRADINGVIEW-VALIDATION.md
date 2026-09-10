@@ -291,6 +291,20 @@ Items 40–46 are what would make it one.
 `Direction = Long`, entry left at the default (current price), `Stop price =
 72,940.9`.
 
+### Items 47–50 — the POC, and the hostile scale state
+
+`poc/scale-binding-poc.pine` exists to answer these by looking. It draws, on one
+chart: the same price as a `force_overlay` line **and** as a plain line with no
+parameter, plus an `input.price` marker and a `force_overlay` line at a second
+shared price. Read its header for what each outcome means.
+
+| # | Check | Why it is here |
+|---|---|---|
+| 47 | **Does `force_overlay` govern scale, or only pane?** Add the POC. Compare line **A** (`force_overlay`) against line **B** (no parameter) at the same price, first normally, then with the script pinned to **No Scale**. Record both states | The documentation says `force_overlay` puts a drawing *in the main pane*, and says nothing about scale. The product now carries it on every line and box anyway — free, additive, and possibly the fix. **This item decides whether it is a fix or a no-op**, and the answer should be written into the CHANGELOG either way. |
+| 48 | **Does `input.price`'s marker sit at the same height as a line drawn at the same price?** Compare **C** (the marker) against **D** (our line). Record in both the normal and the No Scale state | This is the reason the shipped script no longer contains a single `input.price`. If C and D ever disagree, a product built on `input.price` shows two stops at once. The POC is the only place that call survives. |
+| 49 | **The hostile state, on the product itself.** Pin `BTC Trading Assistant` to **No Scale** deliberately. Record what happens to the plan's lines and boxes | If they stay correct, `force_overlay` is doing real work and the product is hardened against the reported failure. If they float, Pine cannot fix this and the README's Pin-to-Scale note is the only remedy — which must then be stated plainly rather than buried. |
+| 50 | **Nothing on the chart claims to be a price level except the script's own lines.** With a plan set, count the horizontal levels at the stop price: there must be exactly **one** | `input.price` is gone, so TradingView should no longer add a marker of its own. This is the check that the conflicting-visual class of bug is actually closed rather than moved. |
+
 **If items 42 and 43 both fix it, do not change the Pine.** The declaration is
 already `indicator(..., overlay = true)` with no `scale` argument, which is what
 binds a script to the chart's existing price scale. The two available

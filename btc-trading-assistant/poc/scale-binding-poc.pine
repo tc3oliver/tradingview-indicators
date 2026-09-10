@@ -1,0 +1,115 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © tc3oliver
+
+//@version=6
+
+// ============================================================================
+// PRICE-SCALE BINDING POC — not part of the product
+//
+// WHY THIS FILE EXISTS
+// A screenshot showed the panel printing STOP 72,940.9 while the stop line sat
+// near 65k of chart height. Two mechanisms could put a price level at the wrong
+// height, and they need different fixes:
+//
+//   1. The indicator instance is bound to the wrong price scale. Then EVERY
+//      visual it owns is wrong together, and force_overlay may or may not
+//      exempt drawings from it — the documentation does not say.
+//   2. input.price()'s own horizontal marker is positioned independently of the
+//      line this script draws. Then the two disagree with each other, and no
+//      Pine parameter controls the marker.
+//
+// This file makes both visible at once, on one chart, so the answer comes from
+// looking rather than from reasoning about documentation.
+//
+// HOW TO RUN IT
+//   1. Open BINANCE:BTCUSDT.P, 4H.
+//   2. Add this script. Leave both test prices at their defaults, or set them to
+//      a round number well away from current price so a mismatch is obvious.
+//   3. Look at the four visuals listed under WHAT YOU SHOULD SEE below.
+//   4. Then right-click the script's name in the legend → Pin to Scale → No
+//      Scale, and look again. That is the hostile state, and it is the whole
+//      point of the POC.
+//
+// WHAT YOU SHOULD SEE, and what each outcome means
+//
+//   A  force_overlay line        at TEST PRICE A
+//   B  plain line, no parameter  at TEST PRICE A   (same price, drawn twice)
+//   C  input.price marker        at TEST PRICE B   (TradingView's, not ours)
+//   D  force_overlay line        at TEST PRICE B   (ours, same price as C)
+//
+//   A == B, both correct, in both the normal and the No Scale state
+//        → force_overlay changes nothing, and drawings are never affected by the
+//          instance's scale pin. The bug is not here.
+//   A correct, B wrong, in the No Scale state
+//        → force_overlay DOES re-bind a drawing to the main pane's scale. This is
+//          the outcome that would make force_overlay a real fix rather than a
+//          hedge, and the product already carries it.
+//   A == B, both wrong, in the No Scale state
+//        → the scale pin governs all drawings and Pine cannot override it. The
+//          only fix is the chart's Pin to Scale setting, and the product must say
+//          so rather than pretend.
+//   C and D at different heights, in ANY state
+//        → input.price's marker is not bound to the same scale as the line, and
+//          since no Pine parameter controls it, a product that uses input.price
+//          can show two stops at once. The shipped script therefore uses
+//          input.float for every price the user enters.
+//
+// Record the four outcomes in TRADINGVIEW-VALIDATION.md items 47-50.
+// ============================================================================
+
+indicator("Scale Binding POC", overlay = true, max_lines_count = 10, max_labels_count = 10)
+
+// Deliberately NOT input.price, so this one cannot itself add a marker and
+// confuse the comparison.
+pA = input.float(0.0, "TEST PRICE A (0 = close - 5%)", minval = 0, group = "POC")
+// Deliberately input.price, because its marker is one of the four things under
+// test. This is the only input.price in the repository and it lives here on
+// purpose.
+pB = input.price(0.0, "TEST PRICE B — input.price, watch its marker", group = "POC")
+
+a = pA > 0 ? pA : close * 0.95
+b = pB > 0 ? pB : close * 1.05
+
+var line lA = na
+var line lB = na
+var line lD = na
+var label tA = na
+var label tB = na
+var label tD = na
+
+if barstate.islast
+    x1 = time - 30 * (timeframe.in_seconds() * 1000)
+    x2 = time
+
+    // A: ours, force_overlay. B: ours, no parameter at all. Same price.
+    // If A and B ever render at different heights, force_overlay governs scale.
+    if na(lA)
+        lA := line.new(x1, a, x2, a, xloc = xloc.bar_time, extend = extend.both, color = color.lime, width = 2, force_overlay = true)
+        tA := label.new(x2, a, "A  force_overlay  " + str.tostring(a, "#.##"), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.lime, 20), textcolor = color.black, force_overlay = true)
+    if na(lB)
+        lB := line.new(x1, a, x2, a, xloc = xloc.bar_time, extend = extend.both, color = color.orange, style = line.style_dashed, width = 1)
+        tB := label.new(x1, a, "B  no force_overlay  " + str.tostring(a, "#.##"), xloc = xloc.bar_time, style = label.style_label_right, color = color.new(color.orange, 20), textcolor = color.black)
+    // D: ours, at the same price as the input.price marker C.
+    // If C and D disagree, the marker is not on the line's scale.
+    if na(lD)
+        lD := line.new(x1, b, x2, b, xloc = xloc.bar_time, extend = extend.both, color = color.fuchsia, width = 2, force_overlay = true)
+        tD := label.new(x2, b, "D  ours, = C's price  " + str.tostring(b, "#.##"), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.fuchsia, 20), textcolor = color.white, force_overlay = true)
+
+    line.set_xy1(lA, x1, a)
+    line.set_xy2(lA, x2, a)
+    label.set_xy(tA, x2, a)
+    label.set_text(tA, "A  force_overlay  " + str.tostring(a, "#.##"))
+    line.set_xy1(lB, x1, a)
+    line.set_xy2(lB, x2, a)
+    label.set_xy(tB, x1, a)
+    label.set_text(tB, "B  no force_overlay  " + str.tostring(a, "#.##"))
+    line.set_xy1(lD, x1, b)
+    line.set_xy2(lD, x2, b)
+    label.set_xy(tD, x2, b)
+    label.set_text(tD, "D  ours, = C's price  " + str.tostring(b, "#.##"))
+
+// A real price series, so there is something plotted to right-click for the
+// Pin to Scale menu, and something that is unambiguously on the main scale to
+// compare everything else against. The shipped product's only plot is na by
+// default, which is why its scale menu can be hard to reach.
+plot(close, "close (reference, definitely on the main scale)", color = color.new(color.blue, 60))

@@ -1,6 +1,6 @@
 {
   "name": "btc-trading-assistant",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "One BTC TradingView indicator: a plan-first discretionary workflow. Confirmed 4H market context, interactive entry/stop/target, and cost-aware fixed-risk position sizing. No automatic directional signals — none of the eight pre-registered studies in research/ produced a tradable one.",
   "author": "tc3oliver",
   "license": "MPL-2.0",

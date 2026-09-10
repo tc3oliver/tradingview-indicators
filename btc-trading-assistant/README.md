@@ -3,7 +3,7 @@
 Plan a BTC trade in 30 seconds.
 
 - Confirmed 4H BTC market context
-- Draggable Stop, and a plan from four settings
+- A plan from four settings
 - Cost-aware position sizing
 - Fixed-risk sizing (percent of equity or fixed cash)
 - Finite risk / reward zones drawn on the chart
@@ -25,13 +25,13 @@ Plan a BTC trade in 30 seconds.
 
 1. Enable **Trade plan**.
 2. Choose **Long** or **Short**.
-3. Drag the **Stop** line to where your idea is wrong.
+3. Type the **Stop price** — where your idea is wrong.
 4. Set **Account equity** and **Risk (%)**.
 
 That's it.
 
 Entry follows the current price. The target defaults to 2R. Trading costs are
-included. Position size, risk, cost and break-even update as you drag.
+included. Position size, risk, cost and break-even update as you change it.
 
 Market context needs nothing at all — it is drawn from the moment you add the
 indicator, with default symbols and every optional feed off.
@@ -72,7 +72,7 @@ out for itself:
 ```
 BTC TRADE PLAN
 LONG · PLANNING
-SET STOP · drag the stop line, or enter your invalidation price
+SET STOP · enter your invalidation price in the settings
 4H CONTEXT                 Uptrend · elevated vol · OI normal
 DISCRETIONARY MODE · NO AUTO ENTRIES
 ```
@@ -211,7 +211,7 @@ Four controls, and one of them you set once:
 |---|---|---|
 | Enable trade plan | Trade plan | Off by default |
 | Direction | Trade plan | Long or Short — yours, not the tool's |
-| Stop price | Trade plan | Where your idea is wrong. Drag the line, or type it |
+| Stop price | Trade plan | Where your idea is wrong. Type the price |
 | Account equity | Account | Set once |
 | Risk (%) | Account | What the trade loses if the stop is hit. Default 1% |
 
@@ -239,9 +239,16 @@ to be touched.
 | Max exposure (x equity) | Caps position notional. When it binds, the panel says `SIZE CAPPED` |
 
 `Stop price`, `Manual entry price`, `Custom target price` and `Actual fill price`
-are `input.price` fields: drag the marker on the chart or type the number.
-Everything downstream — size, risk, cost, targets, break-even, the drawn zones —
-updates as you move it.
+are `input.float` fields — typed, not dragged. Everything downstream — size, risk,
+cost, targets, break-even, the drawn zones — updates as you change them.
+
+They were `input.price` until v1.2.5, which is draggable and was the nicer
+interaction. `input.price` also adds a horizontal marker of TradingView's own to
+the chart: always, with no parameter to hide or restyle it, and none that binds it
+to a price scale. So the chart could show two stops — TradingView's marker and
+this script's line — with no way to guarantee they agree. One price you have to
+type beats two that disagree, so the draggable marker is gone and the script's own
+line is the only stop on the chart.
 
 Two behaviours never need a dropdown, so each of these is a checkbox that says
 what it does. An input that cannot affect anything in the current configuration
@@ -309,29 +316,39 @@ Each can be switched off. Prices are rounded to the instrument's tick before the
 are drawn or printed, because a price the exchange cannot accept is not a price
 you can put an order at.
 
-#### If the lines are at the wrong height
+#### Every level is drawn by the script, on the main pane
 
-If the panel says `STOP 72,940.9` but the stop line is drawn somewhere else, or
-the levels do not move with the candles when you pan vertically, **the indicator
-is pinned to the wrong price scale.** It is not an arithmetic error: the panel row
-and the line are the same value in the source — `px(rt(stopPx))` and `rt(stopPx)`
-— and Pine cannot draw a line at a price other than the one it is given.
+There is exactly **one** horizontal level per price on the chart, and the script
+owns it. Two things make that true:
 
-One toggle tells you which it is: switch on **Daily 200MA** under Display. It
-plots a real price series that should sit on the candles. If *it* is at the wrong
-height too, the whole indicator is on the wrong scale.
+- **No `input.price` anywhere.** It is draggable, which was nicer, but it also
+  adds a marker of TradingView's own that cannot be hidden or bound to a scale
+  from Pine — so the chart could show two stops with no guarantee they agreed.
+  Prices are typed now.
+- **`force_overlay = true` on every line and box.** All seven levels are created
+  at a single `line.new()` and both zones at a single `box.new()`, so the
+  parameter cannot be missed when a level is added later.
 
-The fix is TradingView's, not the script's: right-click the indicator's name in
-the chart legend → **Pin to Scale** → the same scale the price is on (usually
-`Scale A` / Right). `No Scale` is the setting that produces exactly this — the
-drawings float in screen space instead of hanging off the price axis.
+The panel row and the line are the same value in the source — `px(rt(stopPx))`
+and `rt(stopPx)` — so a number on the panel and the line beside it cannot
+disagree. Pine draws a line at the price it is given.
 
-This setting is saved per instance in the chart layout, so an old instance can
-carry it while a freshly added one does not. Nothing in Pine can override it: the
-script already declares `overlay = true` with no `scale` argument, which is the
-declaration that binds it to the chart's existing scale, and both alternatives
-are worse — `scale.none` causes the symptom, and `scale.right` would attach the
-script to a *new* right scale rather than the one the candles use.
+**If the levels are still at the wrong height,** or they do not move with the
+candles when you pan vertically, the indicator instance is bound to the wrong
+price scale. One toggle tells you: switch on **Daily 200MA** under Display, which
+plots a real price series that should sit on the candles. If *it* is wrong too,
+the whole indicator is on the wrong scale, and the remedy is TradingView's —
+right-click the indicator's name in the legend → **Pin to Scale** → the scale the
+price is on (usually `Scale A` / Right). `No Scale` produces exactly this symptom.
+
+That setting is saved per instance in the chart layout, so re-adding the indicator
+clears it. `force_overlay` is the strongest binding to the main pane that Pine
+offers and the script now uses it everywhere; whether it *also* overrides a
+mis-pinned scale is not documented and is recorded as an open question, manual
+item 47. What is not available is a `scale` argument that would help: omitting it,
+as the script does, is what binds a script to the chart's existing scale, while
+`scale.none` causes this symptom and `scale.right` would attach to a *new* right
+scale rather than the candles'.
 
 ### Plan alerts
 
@@ -339,7 +356,7 @@ Off by default. When on, they fire on **confirmed bars only**, once per level:
 Planning alerts when price touches your entry; Active alerts when it touches your
 stop or your target. `1R / 2R / 3R` alerts are separately opt-in.
 
-A level re-arms when it **moves**, so dragging your stop to a new price arms it
+A level re-arms when it **moves**, so changing your stop to a new price arms it
 again while price oscillating around an unchanged stop fires once.
 
 Create the alert on the indicator using **Any alert() function call**.
@@ -490,8 +507,8 @@ Two separate published indicators, used one after the other:
 1. **[`session-highs-and-lows-indicator`](../session-highs-and-lows-indicator/)**
    to identify the price levels you care about — session highs and lows.
 2. **BTC Trading Assistant** to plan and size the trade against one of them:
-   drag the stop to the level that would invalidate the idea, read the size, risk
-   and cost, set an alert.
+   enter the level that would invalidate the idea as the stop, read the size,
+   risk and cost, set an alert.
 
 They are not merged, and neither modifies the other. The session indicator is a
 separate script with its own release history; this one adds no level detection of

@@ -6,7 +6,7 @@ One BTC TradingView indicator. A trade plan takes four settings — direction,
 stop, account equity, risk % — and everything else has a default:
 
 - confirmed 4H market context — trend, volatility, positioning
-- a draggable stop; entry follows the market and the target defaults to 2R
+- entry follows the market, the stop is yours, and the target defaults to 2R
 - cost-aware, fixed-risk position sizing
 - break-even, risk and reward zones, R targets
 - live R and estimated net P&L once the trade is on

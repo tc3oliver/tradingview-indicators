@@ -155,9 +155,18 @@ export async function sourceChecks() {
   const actives = (RAW.match(/\bactive = /g) ?? []).length;
   check(actives >= 15, `${actives} inputs are conditionally greyed out with active =`);
   check(!/confirm\s*=\s*true/.test(code), 'no input uses confirm = true, so first run draws context instead of opening a dialog');
+  // Every price a user enters is an input.float, NOT an input.price. input.price
+  // adds a horizontal marker of TradingView's own to the chart, by default, with
+  // no parameter to hide or restyle it and none that binds it to a price scale.
+  // That marker is a second price level this script cannot control, and two
+  // levels both claiming to be the stop is a worse product than one you type.
+  check(!/input\.price\(/.test(code), 'no input.price() anywhere — the script owns every price level drawn on the chart');
   for (const p of ['Stop price', '  Manual entry price', '  Custom target price', '  Actual fill price']) {
-    check(new RegExp(`input\\.price\\([^\\n]*"${p}"`).test(RAW), `${p.trim()} is an input.price(), draggable on the chart`);
+    check(new RegExp(`input\\.float\\([^\\n]*"${p}"`).test(RAW), `${p.trim()} is an input.float(), typed rather than dragged`);
   }
+  // ...and the tooltips must not still promise a drag that no longer exists.
+  const dragTips = [...RAW.matchAll(/tooltip = "([^"]*)"/g)].map((m) => m[1]).filter((t) => /\bdrag\b/i.test(t) && !/[Nn]ot draggable|rather than dragged/.test(t));
+  check(dragTips.length === 0, `no tooltip offers dragging any more (${dragTips.length} stale)`);
 
   // Every ta.* call must be reachable unconditionally. The two in-context
   // helpers are the ones that could regress, so their shape is pinned.
@@ -1157,6 +1166,29 @@ export async function scaleAlignmentChecks() {
   check(!/\bscale\s*=/.test(decl), '...and passes no scale argument, which is what binds it to the chart\'s existing price scale');
   check(!/scale\.(none|left|right)/.test(RAW.replace(/\/\/.*$/gm, '')),
     '...and never names scale.none, scale.left or scale.right — none of the three is the fix for a mis-pinned instance');
+
+  // ---- force_overlay on every drawing the plan owns ------------------------
+  // Coverage here is structural rather than enumerated, and that is the stronger
+  // claim: all seven lines are created at ONE line.new() inside lvlLine() and
+  // both boxes at ONE box.new() inside zoneBox(), so a level cannot be added
+  // later that quietly misses the parameter. The enumeration below then proves
+  // each of the nine handles really does route through those helpers.
+  for (const ctor of ['line.new', 'box.new']) {
+    const calls = [...RAW.matchAll(new RegExp(`${ctor.replace('.', '\\.')}\\([^\\n]*\\)`, 'g'))].map((m) => m[0]);
+    check(calls.length === 1 && calls.every((c) => /force_overlay = true/.test(c)),
+      `${ctor}() is called once and carries force_overlay = true`);
+  }
+  const ROUTED = [
+    ['Entry', 'lnEntry', 'lvlLine'], ['Stop', 'lnStop', 'lvlLine'], ['Target', 'lnTgt', 'lvlLine'],
+    ['Break-even', 'lnBE', 'lvlLine'], ['1R', 'lnR1', 'lvlLine'], ['2R', 'lnR2', 'lvlLine'],
+    ['3R', 'lnR3', 'lvlLine'], ['Risk box', 'bxRisk', 'zoneBox'], ['Reward box', 'bxRwd', 'zoneBox'],
+  ];
+  for (const [what, handle, helper] of ROUTED) {
+    check(new RegExp(`${handle}\\s*:= ${helper}\\(${handle},`).test(RAW),
+      `${what} is drawn through ${helper}(), so it inherits force_overlay and is moved rather than recreated`);
+  }
+  check((RAW.match(/^var (line|box)\s+\w+\s+= na$/gm) ?? []).length === ROUTED.length,
+    `exactly ${ROUTED.length} persistent handles — force_overlay did not turn a moved object into a new one per bar`);
 
   // ---- one value, two renderings ------------------------------------------
   // The row and the line must read the same variable through the same rounding.

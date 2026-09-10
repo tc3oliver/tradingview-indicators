@@ -1,5 +1,73 @@
 # Changelog
 
+## 1.2.5
+
+Code hardening for the reported misalignment. v1.2.4 diagnosed it and changed no
+Pine, which was not a product outcome; this release changes the product so that
+the chart carries exactly one authoritative price geometry and it belongs to the
+script.
+
+### Changed
+
+- **No `input.price` anywhere. All four price inputs are `input.float`.**
+  `Stop price`, `Manual entry price`, `Custom target price` and `Actual fill
+  price` are typed now, not dragged.
+
+  `input.price` adds a horizontal marker of TradingView's own to the chart — *by
+  default*, with no `confirm` needed, with **no parameter to hide or restyle it**,
+  and with nothing in Pine that binds it to a price scale. So the chart could show
+  two stops: TradingView's marker and this script's line, with no way to guarantee
+  they agreed, and the blue `72,940.9` on the price scale in the report is almost
+  certainly that marker — nothing else in the script draws a price-scale label,
+  because `line` objects do not create one and the only `plot` is `na` by default.
+
+  Losing the drag is a real cost and the nicer interaction is gone. One price you
+  have to type beats two that disagree.
+- **`force_overlay = true` on every line and box.** All seven levels are created
+  at one `line.new()` and both zones at one `box.new()`, so a level added later
+  cannot miss it.
+
+  Stated honestly: the documentation says `force_overlay` controls **pane** — "the
+  drawing will display on the main chart pane, even when the script occupies a
+  separate pane" — and says nothing about scale. This script is already
+  `overlay = true`, so by that reading the parameter is a no-op here. It is
+  carried because it is free, additive, and is the strongest binding to the main
+  pane Pine offers, on the chance that it also governs scale resolution. Whether
+  it does is manual item 47, and the answer belongs in this file once someone
+  looks.
+- Panel text and tooltips no longer offer a drag: `SET STOP · drag the stop line`
+  became `SET STOP · enter your invalidation price in the settings`.
+
+### Added
+
+- **`poc/scale-binding-poc.pine`** — a minimal reproduction that draws the same
+  price as a `force_overlay` line *and* as a plain line, plus an `input.price`
+  marker beside a `force_overlay` line at a second shared price. Four visuals, one
+  chart: it separates "does `force_overlay` govern scale" from "does the
+  `input.price` marker agree with a line" by looking. Its header states what each
+  outcome means. This is the only `input.price` left in the repository, and it is
+  there because it is the thing under test.
+- **Manual items 47–50**, including the hostile state the report asked for:
+  deliberately pin the indicator to `No Scale` and record what happens to the
+  `force_overlay` drawings versus the marker.
+- **11 more offline checks.** Both constructors are asserted to be called exactly
+  once and to carry `force_overlay`; each of the nine handles is asserted to route
+  through `lvlLine()` / `zoneBox()`, which is what makes the coverage claim
+  structural rather than a list someone has to maintain; no `input.price` remains;
+  each price input is an `input.float`; no tooltip still promises a drag.
+
+### Unchanged
+
+Sizing, risk budget, cost model, break-even, R, targets, live P&L and market
+context. `t_entry`, `t_stop`, `t_target` and `t_riskPerUnit` are identical, and a
+stop entered as 72,940.9 is still printed and drawn at 72,940.9.
+
+**Still unconfirmed on a chart.** No one has opened the Pine Editor on this
+release. The `input.price` removal closes the two-conflicting-visuals failure by
+construction — the call is gone, so the marker cannot be drawn. Whether
+`force_overlay` fixes a mis-pinned scale is a question this release does not
+answer and does not claim to.
+
 ## 1.2.4
 
 No Pine change. A reported misalignment — the panel printing `STOP 72,940.9`
